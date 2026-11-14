@@ -1,0 +1,45 @@
+name: collect
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check out the data branch
+        run: |
+          if git ls-remote --exit-code --heads origin data >/dev/null; then
+            git clone --depth 1 --branch data "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" data
+          else
+            mkdir data
+          fi
+      - name: Take a snapshot
+        run: node scripts/collect.ts data
+      - name: Publish
+        working-directory: data
+        run: |
+          # Vercel reads vercel.json from the pushed branch; keep it from building this one.
+          printf '{"git":{"deploymentEnabled":false}}\n' > vercel.json
+          rm -rf .git
+          git init -q -b data
+          git config user.name "omni-tape bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          # One squashed commit: the files carry the history, so the repo does not grow with every run.
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" data:data

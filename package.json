@@ -1,0 +1,23 @@
+{
+  "name": "omni-tape",
+  "version": "0.1.0",
+  "description": "A public history of Variational Omni markets: funding, open interest and volume, with funding on other venues side by side.",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "collect": "node scripts/collect.ts local-data"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.5",
+    "vitest": "^5.0.5"
+  }
+}
