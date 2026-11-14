@@ -7,7 +7,43 @@ import { normalizeSymbol } from "./lib/venues.ts";
 import { venueMedian } from "./lib/snapshot.ts";
 import { VENUE_LABEL, VENUES, type MarketRow, type Snapshot, type Venue } from "./lib/types.ts";
 
-const DATA = (import.meta.env.VITE_DATA_BASE as string | undefined) ?? "https://raw.githubusercontent.com/bars26/omni-tape/data";
+const REPO = "bars26/omni-tape";
+const BRANCH_BASE = `https://raw.githubusercontent.com/${REPO}/data`;
+const LOCAL_BASE = import.meta.env.VITE_DATA_BASE as string | undefined;
+// Public, documented URLs (About page). The site itself reads from a pinned commit, below.
+const DATA = LOCAL_BASE ?? BRANCH_BASE;
+let base = DATA;
+
+/**
+ * raw.githubusercontent.com can keep serving an old copy of a branch for a long time
+ * at some CDN edges, and the data branch is force-pushed every 15 minutes. Files read
+ * by commit SHA are never stale, so resolve the branch head first (GitHub API, 60
+ * unauthenticated calls per hour per visitor IP; cached for 2 minutes) and fall back
+ * to the branch URL if that fails.
+ */
+async function resolveBase(): Promise<string> {
+  if (LOCAL_BASE) return LOCAL_BASE;
+  const KEY = "omnitape:sha";
+  try {
+    const hit = JSON.parse(sessionStorage.getItem(KEY) ?? "null") as { sha: string; at: number } | null;
+    if (hit && Date.now() - hit.at < 120_000) return `https://raw.githubusercontent.com/${REPO}/${hit.sha}`;
+  } catch {
+    /* storage unavailable */
+  }
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/commits/data`, { headers: { accept: "application/vnd.github.sha" } });
+    const sha = (await res.text()).trim();
+    if (!res.ok || !/^[0-9a-f]{40}$/.test(sha)) throw new Error(`GitHub API HTTP ${res.status}`);
+    try {
+      sessionStorage.setItem(KEY, JSON.stringify({ sha, at: Date.now() }));
+    } catch {
+      /* ignore */
+    }
+    return `https://raw.githubusercontent.com/${REPO}/${sha}`;
+  } catch {
+    return BRANCH_BASE;
+  }
+}
 
 const COLOR: Record<"omni" | Venue, string> = {
   omni: "var(--omni)",
@@ -36,12 +72,12 @@ const gaps: ListState = { q: "", type: "perp", minVol: 100_000, sort: "gapAbs", 
 const costs: ListState = { q: "", type: "perp", minVol: 0, sort: "vol", dir: -1 };
 
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${DATA}/${path}`, { cache: "no-cache" });
+  const res = await fetch(`${base}/${path}`);
   if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
   return (await res.json()) as T;
 }
 async function getCsv(path: string): Promise<HistRow[]> {
-  const res = await fetch(`${DATA}/${path}`, { cache: "no-cache" });
+  const res = await fetch(`${base}/${path}`);
   if (res.status === 404) return [];
   if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
   return parseCsv(await res.text());
@@ -498,6 +534,7 @@ async function boot() {
     /* ignore */
   }
   app.innerHTML = `<p class="loading">Loading the latest snapshot…</p>`;
+  base = await resolveBase();
   try {
     [snap, meta] = await Promise.all([getJson<Snapshot>("latest.json"), getJson<typeof meta>("meta.json").catch(() => null)]);
   } catch (e) {
