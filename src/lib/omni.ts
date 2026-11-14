@@ -1,4 +1,5 @@
 import type { MarketRow, Platform } from "./types.ts";
+import { omniCost } from "./cost.ts";
 
 export const OMNI_STATS_URL =
   "https://omni-client-api.prod.ap-northeast-1.variational.io/metadata/v2/stats";
@@ -63,6 +64,8 @@ export function parseOmniStats(raw: Raw): { platform: Platform; markets: MarketR
       intS: num(f?.interval_seconds),
       spread: spreadBps(q.base),
       imp100k: impactBps(q.base, q.size_100k),
+      o1k: omniCost(q.base, q.size_1k),
+      o100k: omniCost(q.base, q.size_100k),
       v: {},
     });
   }

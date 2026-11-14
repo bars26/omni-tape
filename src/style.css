@@ -149,3 +149,11 @@ footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line);
   .top nav { order: 3; flex-basis: 100%; }
   .lede h1 { font-size: 19px; }
 }
+
+.tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; }
+.tag.omni { color: var(--omni); background: color-mix(in srgb, var(--omni) 12%, transparent); }
+.tag.hl { color: var(--c1); background: color-mix(in srgb, var(--c1) 12%, transparent); }
+.link { font: inherit; font-size: 12px; color: var(--omni); background: none; border: 0; cursor: pointer; padding: 0; }
+.table-wrap.flat { border: 0; margin-top: 8px; }
+.note { color: var(--muted); font-size: 11.5px; margin: 8px 0 4px; }
+.flat .nm { max-width: none; white-space: normal; }

@@ -145,3 +145,44 @@ describe("history", () => {
     expect(marketFile("A/B..C")).toBe("m/A_B__C.csv");
   });
 });
+
+import { bookCost, fillPrice, omniCost, parseHlBook, parseLighterBook } from "../src/lib/cost.ts";
+
+describe("cost", () => {
+  it("walks a book and returns the average fill price", () => {
+    // $100 at 100 (1 unit), then $202 at 101 (2 units)
+    expect(fillPrice([[100, 1], [101, 2]], 100)).toBe(100);
+    expect(fillPrice([[100, 1], [101, 2]], 302)).toBeCloseTo(302 / 3, 9);
+    expect(fillPrice([[100, 1]], 101)).toBeNull(); // too thin
+  });
+  it("averages buy and sell slippage and adds the fee", () => {
+    const bids: [number, number][] = [[99, 10]];
+    const asks: [number, number][] = [[101, 10]];
+    expect(bookCost(bids, asks, 500, 0)).toBeCloseTo(100, 6); // 1% each way
+    expect(bookCost(bids, asks, 500, 0.00045)).toBeCloseTo(104.5, 6);
+    expect(bookCost(bids, asks, 5000, 0)).toBeNull();
+    expect(bookCost([], asks, 1, 0)).toBeNull();
+  });
+  it("uses a supplied mid for aggregated books", () => {
+    // aggregated levels rounded away from a true mid of 100
+    expect(bookCost([[99, 10]], [[101, 10]], 100, 0, 100)).toBeCloseTo(100, 6);
+    expect(bookCost([[99, 10]], [[102, 10]], 100, 0, 100)).toBeCloseTo(150, 6);
+  });
+  it("prices Omni's indicative quotes against the base mid, with no fee", () => {
+    expect(omniCost({ bid: "99.9", ask: "100.1" }, { bid: "99", ask: "101" })).toBeCloseTo(100, 6);
+    expect(omniCost({ bid: "99.9", ask: "100.1" }, undefined)).toBeNull();
+    expect(omniCost({ bid: "101", ask: "100" }, { bid: "1", ask: "2" })).toBeNull(); // crossed
+  });
+  it("parses Hyperliquid and Lighter books", () => {
+    const hl = parseHlBook({ levels: [[{ px: "99", sz: "1" }], [{ px: "101", sz: "2" }, { px: "0", sz: "1" }]] });
+    expect(hl).toEqual({ bids: [[99, 1]], asks: [[101, 2]] });
+    const lt = parseLighterBook({
+      bids: [{ price: "98", remaining_base_amount: "1" }, { price: "99", remaining_base_amount: "1" }],
+      asks: [{ price: "102", remaining_base_amount: "1" }, { price: "101", remaining_base_amount: "0" }, { price: "101.5", remaining_base_amount: "2" }],
+    });
+    expect(lt.bids.map((l) => l[0])).toEqual([99, 98]);
+    expect(lt.asks.map((l) => l[0])).toEqual([101.5, 102]);
+    expect(() => parseHlBook({})).toThrow();
+    expect(() => parseLighterBook({ code: 429 })).toThrow();
+  });
+});

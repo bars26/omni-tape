@@ -46,6 +46,19 @@ export function parseHyperliquid(raw: Raw): FundingMap {
   return out;
 }
 
+/** Hyperliquid coin name for each normalized base ("PEPE" -> "kPEPE"), for book requests. */
+export function hlCoinNames(raw: Raw): Map<string, string> {
+  const out = new Map<string, string>();
+  const universe = raw?.[0]?.universe;
+  if (!Array.isArray(universe)) return out;
+  for (const u of universe) {
+    if (u?.isDelisted || typeof u?.name !== "string") continue;
+    const k = normalizeSymbol(u.name);
+    if (!out.has(k) || u.name.toUpperCase() === k) out.set(k, u.name);
+  }
+  return out;
+}
+
 /** dYdX v4 indexer: `nextFundingRate` is a 1-hour rate. */
 export function parseDydx(raw: Raw): FundingMap {
   const out: FundingMap = new Map();

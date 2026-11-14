@@ -3,7 +3,7 @@ import { VENUES, type MarketRow, type Platform, type Venue } from "./types.ts";
 // Per-market history is a small CSV, one row per snapshot. Kept as text so the
 // data branch diffs cleanly and the browser can parse it without a library.
 
-export const MARKET_COLS = ["t", "mark", "vol", "oiL", "oiS", "fo", ...VENUES, "spread", "imp100k"] as const;
+export const MARKET_COLS = ["t", "mark", "vol", "oiL", "oiS", "fo", ...VENUES, "spread", "imp100k", "o1k", "o100k", "h1k", "h100k"] as const;
 export const PLATFORM_COLS = ["t", "vol24", "cumVol", "tvl", "oi", "markets"] as const;
 
 export type HistRow = Record<string, number | null>;
@@ -22,7 +22,7 @@ function fmt(x: number | null | undefined): string {
 export function marketToCsvRow(t: number, m: MarketRow): string {
   const vals: (number | null | undefined)[] = [t, m.mark, m.vol, m.oiL, m.oiS, m.fNext];
   for (const v of VENUES) vals.push(m.v[v as Venue]);
-  vals.push(m.spread, m.imp100k);
+  vals.push(m.spread, m.imp100k, m.o1k, m.o100k, m.h1k, m.h100k);
   return vals.map((x, i) => (i === 0 ? String(x) : fmt(x))).join(",");
 }
 

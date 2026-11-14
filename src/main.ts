@@ -2,6 +2,8 @@ import "./style.css";
 import { renderChart, type Series } from "./chart.ts";
 import { ago, apr, bps, esc, pct, price, usd, when, DASH } from "./format.ts";
 import { marketFile, parseCsv, type HistRow } from "./lib/history.ts";
+import { bookCost, midOf, parseHlBook, parseLighterBook, TAKER_FEE, type Level } from "./lib/cost.ts";
+import { normalizeSymbol } from "./lib/venues.ts";
 import { venueMedian } from "./lib/snapshot.ts";
 import { VENUE_LABEL, VENUES, type MarketRow, type Snapshot, type Venue } from "./lib/types.ts";
 
@@ -31,6 +33,7 @@ interface ListState {
 }
 const list: ListState = { q: "", type: "all", minVol: 0, sort: "vol", dir: -1 };
 const gaps: ListState = { q: "", type: "perp", minVol: 100_000, sort: "gapAbs", dir: -1 };
+const costs: ListState = { q: "", type: "perp", minVol: 0, sort: "vol", dir: -1 };
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${DATA}/${path}`, { cache: "no-cache" });
@@ -51,6 +54,11 @@ function longShare(m: MarketRow): number | null {
 function oi(m: MarketRow): number | null {
   return m.oiL === null || m.oiS === null ? null : m.oiL + m.oiS;
 }
+/** Hyperliquid cost minus Omni cost: positive means Omni is cheaper. */
+function diff(h: number | null | undefined, o: number | null | undefined): number | null {
+  return h === null || h === undefined || o === null || o === undefined ? null : h - o;
+}
+
 function gap(m: MarketRow): number | null {
   const med = venueMedian(m.v);
   return med === null || m.fNext === null ? null : m.fNext - med;
@@ -70,18 +78,24 @@ const SORTERS: Record<string, (m: MarketRow) => number | string | null> = {
     return g === null ? null : Math.abs(g);
   },
   spread: (m) => m.spread,
+  o1k: (m) => m.o1k,
+  o100k: (m) => m.o100k,
+  h1k: (m) => m.h1k ?? null,
+  h100k: (m) => m.h100k ?? null,
+  d1k: (m) => diff(m.h1k, m.o1k),
+  d100k: (m) => diff(m.h100k, m.o100k),
   imp: (m) => m.imp100k,
   ...Object.fromEntries(VENUES.map((v) => [v, (m: MarketRow) => m.v[v] ?? null])),
 };
 
-function filtered(st: ListState, needVenue: boolean): MarketRow[] {
+function filtered(st: ListState, keep: (m: MarketRow) => boolean = () => true): MarketRow[] {
   if (!snap) return [];
   const q = st.q.trim().toUpperCase();
   const key = SORTERS[st.sort] ?? SORTERS.vol;
   return snap.markets
     .filter((m) => (st.type === "all" || m.type === st.type) && (m.vol ?? 0) >= st.minVol)
     .filter((m) => !q || m.tk.toUpperCase().includes(q) || m.name.toUpperCase().includes(q))
-    .filter((m) => !needVenue || (m.fNext !== null && Object.keys(m.v).length > 0))
+    .filter(keep)
     .sort((a, b) => {
       const x = key(a);
       const y = key(b);
@@ -105,6 +119,7 @@ function shell(active: string, body: string): string {
   <nav>
     <a href="#/" class="${active === "markets" ? "on" : ""}">Markets</a>
     <a href="#/funding" class="${active === "funding" ? "on" : ""}">Funding gaps</a>
+    <a href="#/cost" class="${active === "cost" ? "on" : ""}">Trade cost</a>
     <a href="#/about" class="${active === "about" ? "on" : ""}">About</a>
   </nav>
   <button class="theme" id="theme" aria-label="Toggle light or dark theme" title="Light / dark">◐</button>
@@ -152,7 +167,7 @@ function fcell(x: number | null | undefined): string {
 // ---------- views ----------
 
 function viewMarkets(): string {
-  const rows = filtered(list, false);
+  const rows = filtered(list);
   const body = rows
     .slice(0, 400)
     .map((m) => {
@@ -187,7 +202,7 @@ function viewMarkets(): string {
 }
 
 function viewFunding(): string {
-  const rows = filtered(gaps, true);
+  const rows = filtered(gaps, (m) => m.fNext !== null && Object.keys(m.v).length > 0);
   const body = rows
     .slice(0, 300)
     .map(
@@ -211,6 +226,51 @@ ${controls(gaps, "gaps")}
 </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
+function costCell(x: number | null | undefined, thin = false): string {
+  if (x === null || x === undefined) return `<td class="num muted">${thin ? '<span title="Hyperliquid\'s visible book cannot fill this size">thin</span>' : DASH}</td>`;
+  return `<td class="num">${bps(x)}</td>`;
+}
+
+function winner(d: number | null, h: number | null | undefined, o: number | null | undefined): string {
+  if (d === null) {
+    if ((h === null || h === undefined) && o !== null && o !== undefined) return `<td><span class="tag omni">Omni</span> <span class="muted">only quote</span></td>`;
+    return `<td class="muted">${DASH}</td>`;
+  }
+  if (Math.abs(d) < 0.5) return `<td class="muted">about even</td>`;
+  return d > 0
+    ? `<td><span class="tag omni">Omni</span> by ${bps(d)} bps</td>`
+    : `<td><span class="tag hl">Hyperliquid</span> by ${bps(-d)} bps</td>`;
+}
+
+function viewCost(): string {
+  const rows = filtered(costs, (m) => m.o1k !== null && m.h1k !== undefined && m.h1k !== null);
+  const omniWins = rows.filter((m) => (diff(m.h100k, m.o100k) ?? 0) > 0).length;
+  const compared = rows.filter((m) => diff(m.h100k, m.o100k) !== null).length;
+  const body = rows
+    .slice(0, 300)
+    .map(
+      (m) => `<tr>
+  <td><a href="#/m/${encodeURIComponent(m.tk)}" class="tk">${esc(m.tk)}</a><div class="nm">${usd(m.vol)} / 24h on Omni</div></td>
+  ${costCell(m.o1k)}${costCell(m.h1k)}${winner(diff(m.h1k, m.o1k), m.h1k, m.o1k)}
+  ${costCell(m.o100k)}${costCell(m.h100k, true)}${winner(diff(m.h100k, m.o100k), m.h100k, m.o100k)}
+</tr>`,
+    )
+    .join("");
+  return `<div class="lede"><h1>Trade cost</h1><p>What a market order costs, in basis points of each venue's own mid price, averaged over buying and selling, fees included. Omni charges no trading fee and earns on the spread; Hyperliquid's base-tier taker fee is 4.5 bps. Omni's numbers are its <b>indicative</b> quotes: the firm quote you get on submit can be better or worse. Hyperliquid's come from its order book at the same moment. Each market's page also checks Lighter's book live.</p></div>
+${controls(costs, "costs")}
+<p class="count">${rows.length} markets on both venues${compared ? ` · at $100K Omni is cheaper on ${omniWins} of ${compared} where both can fill` : ""}</p>
+<div class="table-wrap"><table>
+<thead><tr>
+  ${th(costs, "tk", "Market", "", "")}
+  ${th(costs, "o1k", "Omni $1K", "Omni one-way cost for $1K, bps")}
+  ${th(costs, "h1k", "Hyperliquid $1K", "Hyperliquid one-way cost for $1K incl. 4.5 bps taker fee, bps")}
+  ${th(costs, "d1k", "Cheaper at $1K", "Sorted by Hyperliquid minus Omni", "")}
+  ${th(costs, "o100k", "Omni $100K", "Omni one-way cost for $100K, bps")}
+  ${th(costs, "h100k", "Hyperliquid $100K", "Hyperliquid one-way cost for $100K incl. fee, bps")}
+  ${th(costs, "d100k", "Cheaper at $100K", "Sorted by Hyperliquid minus Omni", "")}
+</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
 function viewAbout(): string {
   return `<article class="prose">
 <h1>About Omni Tape</h1>
@@ -228,6 +288,7 @@ function viewAbout(): string {
 <ul>
 <li>A missing value means the source did not report it; it is never filled with zero.</li>
 <li>Omni swaps (indices, commodities) are not compared with other venues.</li>
+<li>Trade cost: Omni's quotes are indicative, not firm. Hyperliquid shows only 20 price levels at full precision; when that cannot fill $100K the cost is read from its grouped book, whose prices are rounded away from mid, so it can overstate the cost slightly but never understate it. "Thin" means even the grouped book could not fill the size. Fees are base tier (Hyperliquid 4.5 bps taker) and standard account (Lighter 0).</li>
 <li>Unofficial and unaffiliated. Not trading advice.</li>
 </ul>
 </article>`;
@@ -246,9 +307,10 @@ ${m ? `<section class="kpis small">
   <div><span>Spread · $100K</span><b>${bps(m.spread)} · ${bps(m.imp100k)} bps</b></div>
 </section>` : ""}
 <div class="range" role="group" aria-label="Range">${["1D", "7D", "30D", "All"].map((r) => `<button data-range="${r}">${r}</button>`).join("")}</div>
-<div id="c-f"></div><div id="c-oi"></div><div id="c-p"></div><div id="c-v"></div>`,
+<div id="c-f"></div><section class="chart" id="live-cost"><div class="chart-head"><h3>Cost to trade now</h3><button class="link" id="live-refresh">Refresh</button></div><p class="muted empty">Loading order books…</p></section><div id="c-c"></div><div id="c-oi"></div><div id="c-p"></div><div id="c-v"></div>`,
   );
   bindShell();
+  if (m) liveCost(m);
   let rows: HistRow[] = [];
   try {
     rows = await getCsv(marketFile(tk));
@@ -273,10 +335,102 @@ ${m ? `<section class="kpis small">
       fmt: usd,
     });
     renderChart(document.getElementById("c-p")!, { title: "Mark price", series: [{ label: "Mark", color: COLOR.omni, points: s("mark") }], fmt: price });
+    renderChart(document.getElementById("c-c")!, {
+      title: "Cost of a $100K market order (bps, one way)",
+      series: [
+        { label: "Omni (indicative)", color: COLOR.omni, points: s("o100k"), width: 2.4 },
+        { label: "Hyperliquid", color: COLOR.hl, points: s("h100k") },
+      ],
+      fmt: (v) => `${bps(v)} bps`,
+    });
     renderChart(document.getElementById("c-v")!, { title: "24h volume (rolling)", series: [{ label: "Volume", color: "var(--c1)", points: s("vol") }], fmt: usd });
   };
   document.querySelectorAll<HTMLButtonElement>("[data-range]").forEach((b) => b.addEventListener("click", () => draw(b.dataset.range!)));
   draw(rows.length && rows[rows.length - 1].t! - rows[0].t! > 7 * 86400 ? "7D" : "All");
+}
+
+// ---------- live order books (market page) ----------
+
+const LIVE_SIZES = [1_000, 10_000, 100_000];
+const LIGHTER = "https://mainnet.zklighter.elliot.ai/api/v1";
+let lighterMarkets: Promise<Map<string, number>> | null = null;
+
+async function hlBook(coin: string, nSigFigs?: number): Promise<{ bids: Level[]; asks: Level[] }> {
+  const res = await fetch("https://api.hyperliquid.xyz/info", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(nSigFigs ? { type: "l2Book", coin, nSigFigs } : { type: "l2Book", coin }),
+  });
+  if (!res.ok) throw new Error(`Hyperliquid HTTP ${res.status}`);
+  return parseHlBook(await res.json());
+}
+
+async function hlCoin(base: string): Promise<string | null> {
+  const res = await fetch("https://api.hyperliquid.xyz/info", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "meta" }) });
+  if (!res.ok) return null;
+  const meta = await res.json();
+  const want = normalizeSymbol(base);
+  const names: string[] = (meta?.universe ?? []).filter((u: { isDelisted?: boolean }) => !u.isDelisted).map((u: { name: string }) => u.name);
+  return names.find((n) => n.toUpperCase() === want) ?? names.find((n) => normalizeSymbol(n) === want) ?? null;
+}
+
+async function hlCosts(base: string): Promise<(number | null)[] | string> {
+  const coin = await hlCoin(base);
+  if (!coin) return "not listed";
+  const full = await hlBook(coin);
+  const mid = midOf(full.bids, full.asks) ?? undefined;
+  const out: (number | null)[] = [];
+  for (const size of LIVE_SIZES) {
+    let c = bookCost(full.bids, full.asks, size, TAKER_FEE.hl);
+    for (const n of [5, 4, 3]) {
+      if (c !== null) break;
+      const agg = await hlBook(coin, n);
+      c = bookCost(agg.bids, agg.asks, size, TAKER_FEE.hl, mid);
+    }
+    out.push(c);
+  }
+  return out;
+}
+
+async function lighterCosts(base: string): Promise<(number | null)[] | string> {
+  lighterMarkets ??= fetch(`${LIGHTER}/orderBooks`)
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Lighter HTTP ${r.status}`))))
+    .then((d) => {
+      const map = new Map<string, number>();
+      for (const o of d?.order_books ?? []) if (o?.market_type === "perp" && o?.status === "active") map.set(normalizeSymbol(String(o.symbol)), Number(o.market_id));
+      return map;
+    });
+  const id = (await lighterMarkets).get(normalizeSymbol(base));
+  if (id === undefined) return "not listed";
+  const res = await fetch(`${LIGHTER}/orderBookOrders?market_id=${id}&limit=250`);
+  if (!res.ok) throw new Error(`Lighter HTTP ${res.status}`);
+  const { bids, asks } = parseLighterBook(await res.json());
+  return LIVE_SIZES.map((size) => bookCost(bids, asks, size, TAKER_FEE.lighter));
+}
+
+async function liveCost(m: MarketRow) {
+  const host = document.getElementById("live-cost");
+  if (!host) return;
+  const head = host.querySelector(".chart-head")!.outerHTML;
+  const row = (name: string, note: string, vals: (number | null)[] | string) => {
+    const cells =
+      typeof vals === "string"
+        ? `<td class="num muted" colspan="${LIVE_SIZES.length}">${esc(vals)}</td>`
+        : vals.map((v) => (v === null ? `<td class="num muted" title="Visible book cannot fill this size">thin</td>` : `<td class="num">${bps(v)}</td>`)).join("");
+    return `<tr><td><b>${name}</b><div class="nm">${note}</div></td>${cells}</tr>`;
+  };
+  const settle = async (p: Promise<(number | null)[] | string>) => p.catch((e: unknown) => `unavailable (${e instanceof Error ? e.message : String(e)})`);
+  host.innerHTML = `${head}<p class="muted empty">Loading order books…</p>`;
+  const [hl, lt] = m.type === "perp" ? await Promise.all([settle(hlCosts(m.base)), settle(lighterCosts(m.base))]) : ["swap: not compared", "swap: not compared"];
+  const omni = LIVE_SIZES.map((s) => (s === 1_000 ? m.o1k : s === 100_000 ? m.o100k : undefined));
+  host.innerHTML = `${head}<div class="table-wrap flat"><table>
+<thead><tr><th>Venue</th>${LIVE_SIZES.map((s) => `<th class="num">${usd(s)}</th>`).join("")}</tr></thead>
+<tbody>
+${`<tr><td><b>Omni</b><div class="nm">indicative quote, ${snap ? ago(snap.t) : ""} · no fee</div></td>${omni.map((v) => (v === undefined ? `<td class="num muted" title="Omni quotes only $1K and $100K">${DASH}</td>` : v === null ? `<td class="num muted">${DASH}</td>` : `<td class="num">${bps(v)}</td>`)).join("")}</tr>`}
+${row("Hyperliquid", "live order book · 4.5 bps taker fee", hl)}
+${row("Lighter", "live order book · standard account, no fee", lt)}
+</tbody></table></div><p class="note">Basis points of each venue's own mid, one way (buy and sell averaged), fee included. Omni's firm quote on submit can differ from its indicative quote.</p>`;
+  document.getElementById("live-refresh")?.addEventListener("click", () => liveCost(m));
 }
 
 // ---------- wiring ----------
@@ -326,11 +480,11 @@ function bindList(st: ListState, rerender: () => void) {
 async function route() {
   const h = location.hash.replace(/^#\/?/, "");
   if (h.startsWith("m/")) return viewMarket(decodeURIComponent(h.slice(2)));
-  const which = h === "funding" ? "funding" : h === "about" ? "about" : "markets";
+  const which = h === "funding" ? "funding" : h === "cost" ? "cost" : h === "about" ? "about" : "markets";
   const render = () => {
-    app.innerHTML = shell(which, which === "funding" ? viewFunding() : which === "about" ? viewAbout() : viewMarkets());
+    app.innerHTML = shell(which, which === "funding" ? viewFunding() : which === "cost" ? viewCost() : which === "about" ? viewAbout() : viewMarkets());
     bindShell();
-    if (which !== "about") bindList(which === "funding" ? gaps : list, render);
+    if (which !== "about") bindList(which === "funding" ? gaps : which === "cost" ? costs : list, render);
   };
   render();
   window.scrollTo(0, 0);

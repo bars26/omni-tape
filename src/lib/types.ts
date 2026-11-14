@@ -26,6 +26,11 @@ export interface MarketRow {
   intS: number | null; // funding interval, seconds
   spread: number | null; // base bid/ask spread, bps of mid
   imp100k: number | null; // cost to buy $100k vs mid, bps
+  // One-way cost of a market order (buy/sell averaged), bps of that venue's mid, taker fee included.
+  o1k: number | null; // Omni, $1K (indicative quote)
+  o100k: number | null; // Omni, $100K (indicative quote)
+  h1k?: number | null; // Hyperliquid, $1K
+  h100k?: number | null; // Hyperliquid, $100K (null: top 20 levels too thin)
   v: Partial<Record<Venue, number>>; // other venues' funding, annualized
 }
 
