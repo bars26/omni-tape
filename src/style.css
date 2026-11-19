@@ -12,7 +12,7 @@
   --c2: #d97706;
   --c3: #b8860b;
   --c4: #0e9aa7;
-  --c5: #9c4dcc;
+  --c5: #db2777;
   --grid: #ecebe5;
   color-scheme: light;
 }
@@ -31,7 +31,7 @@
     --c2: #f59e0b;
     --c3: #e3c34d;
     --c4: #3fd0d9;
-    --c5: #c792ea;
+    --c5: #f472b6;
     --grid: #22252d;
     color-scheme: dark;
   }
@@ -50,7 +50,7 @@
   --c2: #f59e0b;
   --c3: #e3c34d;
   --c4: #3fd0d9;
-  --c5: #c792ea;
+  --c5: #f472b6;
   --grid: #22252d;
   color-scheme: dark;
 }

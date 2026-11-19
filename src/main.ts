@@ -400,7 +400,7 @@ ${m ? `<section class="kpis small">
   <div><span>Spread · $100K</span><b>${bps(m.spread)} · ${bps(m.imp100k)} bps</b></div>
 </section>
 ${m.p24 && m.p24.n >= MIN_PERSIST ? `<p class="fresh">Last 24 h: Omni's funding was above the other venues' median in <b>${m.p24.above}</b> of ${m.p24.n} snapshots and below it in <b>${m.p24.below}</b> (average gap ${apr(m.p24.avg)}).</p>` : ""}` : ""}
-<div class="range" role="group" aria-label="Range">${["1D", "7D", "30D", "All"].map((r) => `<button data-range="${r}">${r}</button>`).join("")}</div>
+<div class="range" role="group" aria-label="Range">${["1D", "3D", "7D", "30D", "All"].map((r) => `<button data-range="${r}">${r}</button>`).join("")}</div>
 <div id="c-f"></div><section class="chart" id="live-cost"><div class="chart-head"><h3>Cost to trade now</h3><button class="link" id="live-refresh">Refresh</button></div><p class="muted empty">Loading order books…</p></section><div id="c-c"></div><div id="c-oi"></div><div id="c-p"></div><div id="c-v"></div>`,
   );
   bindShell();
@@ -415,7 +415,7 @@ ${m.p24 && m.p24.n >= MIN_PERSIST ? `<p class="fresh">Last 24 h: Omni's funding 
   const draw = (range: string) => {
     document.querySelectorAll<HTMLButtonElement>("[data-range]").forEach((b) => b.classList.toggle("on", b.dataset.range === range));
     const last = rows.length ? rows[rows.length - 1].t! : 0;
-    const from = range === "1D" ? last - 86400 : range === "7D" ? last - 7 * 86400 : range === "30D" ? last - 30 * 86400 : -Infinity;
+    const from = range === "1D" ? last - 86400 : range === "3D" ? last - 3 * 86400 : range === "7D" ? last - 7 * 86400 : range === "30D" ? last - 30 * 86400 : -Infinity;
     const r = rows.filter((x) => x.t! >= from);
     const s = (k: string): [number, number | null][] => r.map((x) => [x.t!, x[k] ?? null]);
     const fund: Series[] = [{ label: "Omni", color: COLOR.omni, points: s("fo"), width: 2.4 }, ...VENUES.map((v) => ({ label: VENUE_LABEL[v], color: COLOR[v], points: s(v) }))];
@@ -440,7 +440,8 @@ ${m.p24 && m.p24.n >= MIN_PERSIST ? `<p class="fresh">Last 24 h: Omni's funding 
     renderChart(document.getElementById("c-v")!, { title: "24h volume (rolling)", series: [{ label: "Volume", color: "var(--c1)", points: s("vol") }], fmt: usd });
   };
   document.querySelectorAll<HTMLButtonElement>("[data-range]").forEach((b) => b.addEventListener("click", () => draw(b.dataset.range!)));
-  draw(rows.length && rows[rows.length - 1].t! - rows[0].t! > 7 * 86400 ? "7D" : "All");
+  const span = rows.length ? rows[rows.length - 1].t! - rows[0].t! : 0;
+  draw(span > 7 * 86400 ? "7D" : span > 3 * 86400 ? "3D" : "All");
 }
 
 // ---------- watchlist view ----------
