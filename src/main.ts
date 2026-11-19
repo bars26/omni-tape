@@ -66,9 +66,10 @@ interface ListState {
   minVol: number;
   sort: string;
   dir: 1 | -1;
+  steady?: boolean; // funding page: only gaps that held one way through most of the last 24 h
 }
 const list: ListState = { q: "", type: "all", minVol: 0, sort: "vol", dir: -1 };
-const gaps: ListState = { q: "", type: "perp", minVol: 100_000, sort: "gapAbs", dir: -1 };
+const gaps: ListState = { q: "", type: "perp", minVol: 100_000, sort: "gapAbs", dir: -1, steady: false };
 const costs: ListState = { q: "", type: "perp", minVol: 0, sort: "vol", dir: -1 };
 
 async function getJson<T>(path: string): Promise<T> {
@@ -100,6 +101,53 @@ function gap(m: MarketRow): number | null {
   return med === null || m.fNext === null ? null : m.fNext - med;
 }
 
+// ---------- watchlist (this browser only) ----------
+
+const WATCH_KEY = "omnitape:watch";
+const SUGGESTED = ["BTC-PERP", "ETH-PERP", "HYPE-PERP", "SOL-PERP", "NVDA-PERP", "XAU-SWAP"];
+let watch = new Set<string>();
+
+function loadWatch() {
+  try {
+    const xs = JSON.parse(localStorage.getItem(WATCH_KEY) ?? "[]");
+    if (Array.isArray(xs)) watch = new Set(xs.filter((x): x is string => typeof x === "string").slice(0, 100));
+  } catch {
+    /* storage unavailable: the list just won't persist */
+  }
+}
+function saveWatch() {
+  try {
+    localStorage.setItem(WATCH_KEY, JSON.stringify([...watch]));
+  } catch {
+    /* ignore */
+  }
+}
+function star(tk: string): string {
+  const on = watch.has(tk);
+  return `<button class="star${on ? " on" : ""}" data-star="${esc(tk)}" aria-pressed="${on}" title="${on ? "Remove from" : "Add to"} watchlist" aria-label="${on ? "Remove" : "Add"} ${esc(tk)} ${on ? "from" : "to"} watchlist">${on ? "★" : "☆"}</button>`;
+}
+
+// ---------- 24 h funding persistence ----------
+
+/** Snapshots needed before the 24 h figure is shown (about 6 hours of data). */
+const MIN_PERSIST = 24;
+
+function steadiness(m: MarketRow): number | null {
+  const p = m.p24;
+  return p && p.n >= MIN_PERSIST ? Math.max(p.above, p.below) / p.n : null;
+}
+
+function persCell(m: MarketRow): string {
+  const p = m.p24;
+  if (!p || p.n < MIN_PERSIST) return `<td class="num muted" title="Not enough history in the last 24 h yet">${DASH}</td>`;
+  const hi = p.above >= p.below;
+  const k = hi ? p.above : p.below;
+  const share = k / p.n;
+  const tip = `Over the last 24 h Omni's funding was above the other venues' median in ${p.above} of ${p.n} snapshots and below it in ${p.below}. Average gap ${apr(p.avg)}.`;
+  if (share < 0.6) return `<td class="num pers" title="${tip}"><span class="muted">mixed</span> ${p.above}↑ ${p.below}↓<div class="nm">avg ${apr(p.avg)}</div></td>`;
+  return `<td class="num pers" title="${tip}"><span class="${hi ? "pos" : "neg"}">${hi ? "higher" : "lower"}</span> ${k}/${p.n}<div class="nm">avg ${apr(p.avg)}</div></td>`;
+}
+
 const SORTERS: Record<string, (m: MarketRow) => number | string | null> = {
   tk: (m) => m.tk,
   mark: (m) => m.mark,
@@ -121,6 +169,7 @@ const SORTERS: Record<string, (m: MarketRow) => number | string | null> = {
   d1k: (m) => diff(m.h1k, m.o1k),
   d100k: (m) => diff(m.h100k, m.o100k),
   imp: (m) => m.imp100k,
+  pers: steadiness,
   ...Object.fromEntries(VENUES.map((v) => [v, (m: MarketRow) => m.v[v] ?? null])),
 };
 
@@ -131,6 +180,7 @@ function filtered(st: ListState, keep: (m: MarketRow) => boolean = () => true): 
   return snap.markets
     .filter((m) => (st.type === "all" || m.type === st.type) && (m.vol ?? 0) >= st.minVol)
     .filter((m) => !q || m.tk.toUpperCase().includes(q) || m.name.toUpperCase().includes(q))
+    .filter((m) => !st.steady || (steadiness(m) ?? 0) >= 0.8)
     .filter(keep)
     .sort((a, b) => {
       const x = key(a);
@@ -156,6 +206,7 @@ function shell(active: string, body: string): string {
     <a href="#/" class="${active === "markets" ? "on" : ""}">Markets</a>
     <a href="#/funding" class="${active === "funding" ? "on" : ""}">Funding gaps</a>
     <a href="#/cost" class="${active === "cost" ? "on" : ""}">Trade cost</a>
+    <a href="#/watch" class="${active === "watch" ? "on" : ""}" id="nav-watch">★ Watchlist${watch.size ? ` <span class="badge">${watch.size}</span>` : ""}</a>
     <a href="#/about" class="${active === "about" ? "on" : ""}">About</a>
   </nav>
   <button class="theme" id="theme" aria-label="Toggle light or dark theme" title="Light / dark">◐</button>
@@ -187,6 +238,10 @@ function controls(st: ListState, id: string): string {
   <select data-k="minVol" aria-label="Minimum volume">
     ${vols.map(([v, l]) => `<option value="${v}" ${st.minVol === v ? "selected" : ""}>${l}</option>`).join("")}
   </select>
+  ${st.steady === undefined ? "" : `<select data-k="steady" aria-label="Gap persistence">
+    <option value="0" ${st.steady ? "" : "selected"}>Any gap</option>
+    <option value="1" ${st.steady ? "selected" : ""}>Steady: one way in ≥ 80% of the last 24 h</option>
+  </select>`}
 </div>`;
 }
 
@@ -209,7 +264,7 @@ function viewMarkets(): string {
     .map((m) => {
       const ls = longShare(m);
       return `<tr>
-  <td><a href="#/m/${encodeURIComponent(m.tk)}" class="tk">${esc(m.tk)}</a><div class="nm">${esc(m.name)}</div></td>
+  <td class="mk">${star(m.tk)}<a href="#/m/${encodeURIComponent(m.tk)}" class="tk">${esc(m.tk)}</a><div class="nm">${esc(m.name)}</div></td>
   <td class="num">${price(m.mark)}</td>
   <td class="num">${usd(m.vol)}</td>
   <td class="num">${usd(oi(m))}</td>
@@ -243,22 +298,24 @@ function viewFunding(): string {
     .slice(0, 300)
     .map(
       (m) => `<tr>
-  <td><a href="#/m/${encodeURIComponent(m.tk)}" class="tk">${esc(m.tk)}</a><div class="nm">${usd(m.vol)} / 24h</div></td>
+  <td class="mk">${star(m.tk)}<a href="#/m/${encodeURIComponent(m.tk)}" class="tk">${esc(m.tk)}</a><div class="nm">${usd(m.vol)} / 24h</div></td>
   ${fcell(m.fNext)}
   ${VENUES.map((v) => fcell(m.v[v])).join("")}
   ${fcell(gap(m))}
+  ${persCell(m)}
 </tr>`,
     )
     .join("");
-  return `<div class="lede"><h1>Funding gaps</h1><p>Omni's next funding rate next to the same market on other venues, all annualized. <b>Gap</b> is Omni minus the median of the others. Rates move every interval, venues pay on different schedules (Omni: 1–8 h), and a gap says nothing about fees, spread or the cost of holding both sides.</p></div>
+  return `<div class="lede"><h1>Funding gaps</h1><p>Omni's next funding rate next to the same market on other venues, all annualized. <b>Gap</b> is Omni minus the median of the others. Rates move every interval, venues pay on different schedules (Omni: 1–8 h), and a gap says nothing about fees, spread or the cost of holding both sides. <b>Last 24 h</b> tells a one-off spike from a gap that has held for hours: "higher 89/96" means Omni was above the others in 89 of the last 96 snapshots.</p></div>
 ${controls(gaps, "gaps")}
-<p class="count">${rows.length} markets listed on Omni and at least one other venue</p>
+<p class="count">${rows.length} markets listed on Omni and at least one other venue${gaps.steady ? ", with a gap that held one way in at least 80% of the last 24 h" : ""}</p>
 <div class="table-wrap"><table>
 <thead><tr>
   ${th(gaps, "tk", "Market", "", "")}
   ${th(gaps, "f", "Omni")}
   ${VENUES.map((v) => th(gaps, v, VENUE_LABEL[v])).join("")}
   ${th(gaps, "gapAbs", "Gap", "Omni minus the median of the other venues; sorted by size")}
+  ${th(gaps, "pers", "Last 24 h", "How often Omni's funding sat above (or below) the other venues' median over the last 24 h of 15-minute snapshots; sorted by how one-sided it was")}
 </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
@@ -286,7 +343,7 @@ function viewCost(): string {
     .slice(0, 300)
     .map(
       (m) => `<tr>
-  <td><a href="#/m/${encodeURIComponent(m.tk)}" class="tk">${esc(m.tk)}</a><div class="nm">${usd(m.vol)} / 24h on Omni</div></td>
+  <td class="mk">${star(m.tk)}<a href="#/m/${encodeURIComponent(m.tk)}" class="tk">${esc(m.tk)}</a><div class="nm">${usd(m.vol)} / 24h on Omni</div></td>
   ${costCell(m.o1k)}${costCell(m.h1k)}${winner(diff(m.h1k, m.o1k), m.h1k, m.o1k)}
   ${costCell(m.o100k)}${costCell(m.h100k, true)}${winner(diff(m.h100k, m.o100k), m.h100k, m.o100k)}
 </tr>`,
@@ -334,14 +391,15 @@ async function viewMarket(tk: string): Promise<void> {
   const m = snap?.markets.find((x) => x.tk === tk);
   app.innerHTML = shell(
     "",
-    `<div class="lede"><a href="#/" class="back">← Markets</a><h1>${esc(tk)}</h1><p class="muted">${m ? esc(m.name) : "Not in the latest snapshot."}</p></div>
+    `<div class="lede"><a href="#/" class="back">← Markets</a><h1>${m ? star(tk) : ""}${esc(tk)}</h1><p class="muted">${m ? esc(m.name) : "Not in the latest snapshot."}</p></div>
 ${m ? `<section class="kpis small">
   <div><span>Mark</span><b>${price(m.mark)}</b></div>
   <div><span>24h volume</span><b>${usd(m.vol)}</b></div>
   <div><span>Open interest</span><b>${usd(oi(m))}</b><small>${pct(longShare(m))} long</small></div>
   <div><span>Funding (ann.)</span><b>${apr(m.fNext)}</b><small>${m.intS ? `every ${m.intS / 3600} h` : ""}</small></div>
   <div><span>Spread · $100K</span><b>${bps(m.spread)} · ${bps(m.imp100k)} bps</b></div>
-</section>` : ""}
+</section>
+${m.p24 && m.p24.n >= MIN_PERSIST ? `<p class="fresh">Last 24 h: Omni's funding was above the other venues' median in <b>${m.p24.above}</b> of ${m.p24.n} snapshots and below it in <b>${m.p24.below}</b> (average gap ${apr(m.p24.avg)}).</p>` : ""}` : ""}
 <div class="range" role="group" aria-label="Range">${["1D", "7D", "30D", "All"].map((r) => `<button data-range="${r}">${r}</button>`).join("")}</div>
 <div id="c-f"></div><section class="chart" id="live-cost"><div class="chart-head"><h3>Cost to trade now</h3><button class="link" id="live-refresh">Refresh</button></div><p class="muted empty">Loading order books…</p></section><div id="c-c"></div><div id="c-oi"></div><div id="c-p"></div><div id="c-v"></div>`,
   );
@@ -383,6 +441,73 @@ ${m ? `<section class="kpis small">
   };
   document.querySelectorAll<HTMLButtonElement>("[data-range]").forEach((b) => b.addEventListener("click", () => draw(b.dataset.range!)));
   draw(rows.length && rows[rows.length - 1].t! - rows[0].t! > 7 * 86400 ? "7D" : "All");
+}
+
+// ---------- watchlist view ----------
+
+function spark(points: [number, number][]): string {
+  if (points.length < 2) return "";
+  const W = 84, H = 22;
+  const t0 = points[0][0], t1 = points[points.length - 1][0];
+  const vs = points.map((p) => p[1]);
+  const lo = Math.min(...vs), hi = Math.max(...vs);
+  const d = points
+    .map(([t, v], i) => `${i ? "L" : "M"}${(((t - t0) / Math.max(1, t1 - t0)) * W).toFixed(1)},${(H - 2 - ((v - lo) / (hi - lo || 1)) * (H - 4)).toFixed(1)}`)
+    .join("");
+  const up = vs[vs.length - 1] >= vs[0];
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-hidden="true"><path d="${d}" fill="none" stroke="var(${up ? "--pos" : "--neg"})" stroke-width="1.5"/></svg>`;
+}
+
+function viewWatch(): string {
+  const tks = [...watch];
+  if (!tks.length) {
+    const sugg = SUGGESTED.filter((tk) => snap?.markets.some((m) => m.tk === tk));
+    return `<div class="lede"><h1>Watchlist</h1><p>Star markets (☆) in any table or on a market's page and they collect here: price over the last 24 h, funding against other venues, how long the gap has held, and what $100K costs to trade. The list is kept in this browser only; there is no account.</p></div>
+<p class="count">Start with a few:</p><div class="suggest">${sugg.map((tk) => `<button class="chip-btn" data-star="${tk}">☆ ${tk}</button>`).join("")}</div>`;
+  }
+  const rows = tks.map((tk) => {
+    const m = snap?.markets.find((x) => x.tk === tk);
+    if (!m) return `<tr><td class="mk">${star(tk)}<span class="tk">${esc(tk)}</span></td><td colspan="8" class="muted">Not in the latest snapshot</td></tr>`;
+    const ls = longShare(m);
+    return `<tr data-tk="${esc(tk)}">
+  <td class="mk">${star(tk)}<a href="#/m/${encodeURIComponent(tk)}" class="tk">${esc(tk)}</a><div class="nm">${esc(m.name)}</div></td>
+  <td class="num">${price(m.mark)}<div class="nm" data-chg>${DASH}</div></td>
+  <td class="num" data-spark></td>
+  <td class="num">${usd(m.vol)}</td>
+  <td class="num"><span class="skew" style="--l:${ls === null ? 0.5 : ls}"></span>${pct(ls)}</td>
+  ${fcell(m.fNext)}
+  ${fcell(venueMedian(m.v))}
+  ${persCell(m)}
+  <td class="num">${bps(m.o100k)}</td>
+</tr>`;
+  });
+  return `<div class="lede"><h1>Watchlist</h1><p>Kept in this browser only. Click ★ to remove a market.</p></div>
+<div class="table-wrap"><table>
+<thead><tr><th>Market</th><th class="num">Mark · 24 h</th><th class="num">24 h</th><th class="num">24h vol</th><th class="num">Long share</th><th class="num" title="Omni's next funding, annualized">Funding</th><th class="num" title="Median funding on the other venues">Elsewhere</th><th class="num" title="How the funding gap behaved over the last 24 h">Last 24 h</th><th class="num" title="Omni one-way cost of a $100K market order, bps">$100K cost</th></tr></thead>
+<tbody>${rows.join("")}</tbody></table></div>`;
+}
+
+/** Fill 24 h price change and sparklines from each watched market's history. */
+async function fillWatch() {
+  const now = snap?.t ?? Date.now() / 1000;
+  await Promise.all(
+    [...document.querySelectorAll<HTMLTableRowElement>("tr[data-tk]")].map(async (tr) => {
+      const tk = tr.dataset.tk!;
+      try {
+        const rows = (await getCsv(marketFile(tk))).filter((r) => r.t !== null && now - r.t! <= 86400 && r.mark !== null);
+        const pts = rows.map((r) => [r.t!, r.mark!] as [number, number]);
+        tr.querySelector("[data-spark]")!.innerHTML = spark(pts);
+        if (pts.length >= 2 && pts[0][1] > 0) {
+          const chg = pts[pts.length - 1][1] / pts[0][1] - 1;
+          const el = tr.querySelector<HTMLElement>("[data-chg]")!;
+          el.textContent = `${chg >= 0 ? "+" : ""}${(chg * 100).toFixed(2)}%`;
+          el.className = `nm ${chg > 0 ? "pos" : chg < 0 ? "neg" : ""}`;
+        }
+      } catch {
+        /* leave the dash */
+      }
+    }),
+  );
 }
 
 // ---------- live order books (market page) ----------
@@ -486,10 +611,11 @@ function bindShell() {
 
 function bindList(st: ListState, rerender: () => void) {
   document.querySelectorAll<HTMLElement>(".controls [data-k]").forEach((el) => {
-    const k = el.dataset.k as "q" | "type" | "minVol";
+    const k = el.dataset.k as "q" | "type" | "minVol" | "steady";
     el.addEventListener(k === "q" ? "input" : "change", () => {
       const v = (el as HTMLInputElement).value;
       if (k === "minVol") st.minVol = Number(v);
+      else if (k === "steady") st.steady = v === "1";
       else if (k === "type") st.type = v as ListState["type"];
       else st.q = v;
       rerender();
@@ -516,8 +642,14 @@ function bindList(st: ListState, rerender: () => void) {
 async function route() {
   const h = location.hash.replace(/^#\/?/, "");
   if (h.startsWith("m/")) return viewMarket(decodeURIComponent(h.slice(2)));
-  const which = h === "funding" ? "funding" : h === "cost" ? "cost" : h === "about" ? "about" : "markets";
+  const which = h === "funding" ? "funding" : h === "cost" ? "cost" : h === "about" ? "about" : h === "watch" ? "watch" : "markets";
   const render = () => {
+    if (which === "watch") {
+      app.innerHTML = shell(which, viewWatch());
+      bindShell();
+      fillWatch();
+      return;
+    }
     app.innerHTML = shell(which, which === "funding" ? viewFunding() : which === "cost" ? viewCost() : which === "about" ? viewAbout() : viewMarkets());
     bindShell();
     if (which !== "about") bindList(which === "funding" ? gaps : which === "cost" ? costs : list, render);
@@ -533,6 +665,7 @@ async function boot() {
   } catch {
     /* ignore */
   }
+  loadWatch();
   app.innerHTML = `<p class="loading">Loading the latest snapshot…</p>`;
   base = await resolveBase();
   try {
@@ -543,6 +676,20 @@ async function boot() {
     return;
   }
   window.addEventListener("hashchange", route);
+  document.addEventListener("click", (ev) => {
+    const b = (ev.target as HTMLElement | null)?.closest<HTMLButtonElement>("[data-star]");
+    if (!b) return;
+    ev.preventDefault();
+    const tk = b.dataset.star!;
+    if (watch.has(tk)) watch.delete(tk);
+    else watch.add(tk);
+    saveWatch();
+    if (location.hash.replace(/^#\/?/, "") === "watch") return void route();
+    // Elsewhere, update the stars and the nav count in place so scroll and filters stay put.
+    document.querySelectorAll<HTMLElement>(`[data-star="${CSS.escape(tk)}"]`).forEach((el) => (el.outerHTML = star(tk)));
+    const nav = document.getElementById("nav-watch");
+    if (nav) nav.innerHTML = `★ Watchlist${watch.size ? ` <span class="badge">${watch.size}</span>` : ""}`;
+  });
   await route();
 }
 

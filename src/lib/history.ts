@@ -1,4 +1,4 @@
-import { VENUES, type MarketRow, type Platform, type Venue } from "./types.ts";
+import { VENUES, type MarketRow, type Persistence, type Platform, type Venue } from "./types.ts";
 
 // Per-market history is a small CSV, one row per snapshot. Kept as text so the
 // data branch diffs cleanly and the browser can parse it without a library.
@@ -84,6 +84,32 @@ function migrate(lines: string[], header: readonly string[]): string[] {
     const at = new Map(oldHead.map((h, i) => [h, cells[i] ?? ""]));
     return header.map((h) => at.get(h) ?? "").join(",");
   });
+}
+
+/**
+ * Funding-gap persistence over a trailing window: for each snapshot with an Omni
+ * rate and at least one other venue, compare Omni with the median of the others.
+ * Null when no snapshot qualifies.
+ */
+export function persistence(rows: HistRow[], now: number, windowS = 86400): Persistence | null {
+  let n = 0;
+  let above = 0;
+  let below = 0;
+  let sum = 0;
+  for (const r of rows) {
+    if (r.t === null || now - r.t > windowS || r.t > now) continue;
+    const fo = r.fo;
+    if (fo === null || fo === undefined || !Number.isFinite(fo)) continue;
+    const xs = VENUES.map((v) => r[v]).filter((x): x is number => typeof x === "number" && Number.isFinite(x)).sort((a, b) => a - b);
+    if (!xs.length) continue;
+    const mid = xs.length >> 1;
+    const med = xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
+    n++;
+    if (fo > med) above++;
+    else if (fo < med) below++;
+    sum += fo - med;
+  }
+  return n ? { n, above, below, avg: sum / n } : null;
 }
 
 /** Safe file name for a ticker. */

@@ -11,7 +11,7 @@ import { OMNI_STATS_URL } from "../src/lib/omni.ts";
 import { DYDX_URL, HL_URL, hlCoinNames, LIGHTER_URL, normalizeSymbol, parseDydx, parseHyperliquid, parseLighterAggregate, type FundingMap } from "../src/lib/venues.ts";
 import { bookCost, midOf, parseHlBook, TAKER_FEE } from "../src/lib/cost.ts";
 import { buildSnapshot } from "../src/lib/snapshot.ts";
-import { appendAndCompact, MARKET_COLS, marketFile, marketToCsvRow, PLATFORM_COLS, platformToCsvRow } from "../src/lib/history.ts";
+import { appendAndCompact, MARKET_COLS, marketFile, marketToCsvRow, parseCsv, persistence, PLATFORM_COLS, platformToCsvRow } from "../src/lib/history.ts";
 import type { Snapshot, Venue } from "../src/lib/types.ts";
 
 const UA = { "user-agent": "omni-tape/0.1 (+https://github.com/bars26/omni-tape)" };
@@ -119,11 +119,15 @@ async function main() {
   const snap = buildSnapshot({ t, omniRaw, venues });
   const books = hlRaw instanceof Error ? { ok: 0, fail: 0 } : await hlCosts(snap.markets, hlCoinNames(hlRaw));
 
-  await write(join(dir, "latest.json"), JSON.stringify(snap));
   for (const m of snap.markets) {
     const path = join(dir, marketFile(m.tk));
-    await write(path, appendAndCompact(await readText(path), MARKET_COLS, marketToCsvRow(t, m), t));
+    const csv = appendAndCompact(await readText(path), MARKET_COLS, marketToCsvRow(t, m), t);
+    await write(path, csv);
+    const p = persistence(parseCsv(csv), t);
+    if (p) m.p24 = p;
   }
+  // Written after the history so each market carries its 24 h persistence summary.
+  await write(join(dir, "latest.json"), JSON.stringify(snap));
   const pPath = join(dir, "platform.csv");
   await write(pPath, appendAndCompact(await readText(pPath), PLATFORM_COLS, platformToCsvRow(t, snap.platform), t));
 

@@ -32,6 +32,15 @@ export interface MarketRow {
   h1k?: number | null; // Hyperliquid, $1K
   h100k?: number | null; // Hyperliquid, $100K (null: top 20 levels too thin)
   v: Partial<Record<Venue, number>>; // other venues' funding, annualized
+  p24?: Persistence; // how the funding gap behaved over the last 24 h
+}
+
+/** Over the last 24 h of snapshots: how often Omni's funding sat above/below the other venues' median. */
+export interface Persistence {
+  n: number; // snapshots where both Omni and at least one other venue reported
+  above: number; // Omni higher than the median
+  below: number; // Omni lower than the median
+  avg: number | null; // mean of (Omni - median), annualized
 }
 
 export interface Platform {

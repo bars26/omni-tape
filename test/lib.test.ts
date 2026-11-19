@@ -186,3 +186,31 @@ describe("cost", () => {
     expect(() => parseLighterBook({ code: 429 })).toThrow();
   });
 });
+
+import { persistence } from "../src/lib/history.ts";
+
+describe("persistence", () => {
+  const now = 100_000;
+  const row = (t: number, fo: number | null, v: Record<string, number | null>) => ({ t, fo, hl: null, dydx: null, binance: null, bybit: null, lighter: null, ...v });
+  it("counts snapshots above and below the venue median inside the window", () => {
+    const rows = [
+      row(now - 90_000, 9, { hl: 0 }), // outside 24 h
+      row(now - 3600, 0.5, { hl: 0.1, binance: 0.2, bybit: 0.9 }), // median 0.2 -> above
+      row(now - 1800, 0.1, { hl: 0.3 }), // below
+      row(now - 900, 0.3, { hl: 0.3 }), // equal: neither
+      row(now, 0.4, {}), // no venue: skipped
+      row(now - 600, null, { hl: 1 }), // no Omni rate: skipped
+    ];
+    const p = persistence(rows, now)!;
+    expect(p).toMatchObject({ n: 3, above: 1, below: 1 });
+    expect(p.avg).toBeCloseTo((0.3 - 0.2 + 0) / 3, 9);
+  });
+  it("uses the mean of the two middle venues for an even count", () => {
+    expect(persistence([row(now, 0.25, { hl: 0.1, dydx: 0.3 })], now)).toMatchObject({ n: 1, above: 1 });
+    expect(persistence([row(now, 0.15, { hl: 0.1, dydx: 0.3 })], now)).toMatchObject({ n: 1, below: 1 });
+  });
+  it("returns null when nothing qualifies", () => {
+    expect(persistence([], now)).toBeNull();
+    expect(persistence([row(now, 0.1, {})], now)).toBeNull();
+  });
+});
