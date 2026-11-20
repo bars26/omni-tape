@@ -5,7 +5,7 @@
 //
 // Node >= 22.18 runs this TypeScript directly (type stripping).
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { OMNI_STATS_URL } from "../src/lib/omni.ts";
 import { DYDX_URL, HL_URL, hlCoinNames, LIGHTER_URL, normalizeSymbol, parseDydx, parseHyperliquid, parseLighterAggregate, type FundingMap } from "../src/lib/venues.ts";
@@ -13,6 +13,8 @@ import { bookCost, midOf, parseHlBook, TAKER_FEE } from "../src/lib/cost.ts";
 import { buildSnapshot } from "../src/lib/snapshot.ts";
 import { appendAndCompact, MARKET_COLS, marketFile, marketToCsvRow, parseCsv, persistence, PLATFORM_COLS, platformToCsvRow } from "../src/lib/history.ts";
 import type { Snapshot, Venue } from "../src/lib/types.ts";
+import { buildDigest, change, DAY, newListings, updateListings, type Listings } from "../src/lib/summary.ts";
+import type { HistRow } from "../src/lib/history.ts";
 
 const UA = { "user-agent": "omni-tape/0.1 (+https://github.com/bars26/omni-tape)" };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -119,24 +121,57 @@ async function main() {
   const snap = buildSnapshot({ t, omniRaw, venues });
   const books = hlRaw instanceof Error ? { ok: 0, fail: 0 } : await hlCosts(snap.markets, hlCoinNames(hlRaw));
 
+  const histories = new Map<string, HistRow[]>();
   for (const m of snap.markets) {
     const path = join(dir, marketFile(m.tk));
     const csv = appendAndCompact(await readText(path), MARKET_COLS, marketToCsvRow(t, m), t);
     await write(path, csv);
-    const p = persistence(parseCsv(csv), t);
+    const rows = parseCsv(csv);
+    histories.set(m.tk, rows);
+    const p = persistence(rows, t);
     if (p) m.p24 = p;
+    const d = change(rows, t, DAY);
+    if (d) m.d24 = d;
   }
-  // Written after the history so each market carries its 24 h persistence summary.
-  await write(join(dir, "latest.json"), JSON.stringify(snap));
   const pPath = join(dir, "platform.csv");
-  await write(pPath, appendAndCompact(await readText(pPath), PLATFORM_COLS, platformToCsvRow(t, snap.platform), t));
+  const platformCsv = appendAndCompact(await readText(pPath), PLATFORM_COLS, platformToCsvRow(t, snap.platform), t);
+  await write(pPath, platformCsv);
 
   const metaPath = join(dir, "meta.json");
   const prev = JSON.parse((await readText(metaPath)) || "{}");
+
+  // Listing dates: backfilled from each market's first history row the first time.
+  const lPath = join(dir, "listings.json");
+  const prevListings = JSON.parse((await readText(lPath)) || "null") as Listings | null;
+  const listings = updateListings(prevListings, prev.first ?? t, snap.markets, t, (tk) => histories.get(tk)?.[0]?.t ?? null);
+  if (!prevListings) {
+    // First run with listings: markets that already disappeared still have a history file.
+    const files = await readdir(join(dir, "m")).catch(() => [] as string[]);
+    for (const f of files) {
+      const tk = f.replace(/\.csv$/, "");
+      if (!f.endsWith(".csv") || listings.markets[tk]) continue;
+      const rows = parseCsv(await readText(join(dir, "m", f)));
+      if (rows.length) listings.markets[tk] = { name: tk, first: rows[0].t!, last: rows[rows.length - 1].t! };
+    }
+  }
+  await write(lPath, JSON.stringify(listings));
+  for (const n of newListings(listings, t)) {
+    const m = snap.markets.find((x) => x.tk === n.tk);
+    if (m) m.listed = n.first;
+  }
+
+  // Written after the history so each market carries its 24 h summaries.
+  await write(join(dir, "latest.json"), JSON.stringify(snap));
+
+  // Rolling 7-day digest; the file for each ISO week ends up holding that week's last run.
+  const digest = buildDigest({ now: t, markets: snap.markets, history: (tk) => histories.get(tk) ?? [], platformRows: parseCsv(platformCsv), listings });
+  const digestJson = JSON.stringify(digest);
+  await write(join(dir, "digest", "latest.json"), digestJson);
+  await write(join(dir, "digest", `${digest.week}.json`), digestJson);
   await write(metaPath, JSON.stringify({ first: prev.first ?? t, last: t, snapshots: (prev.snapshots ?? 0) + 1 }, null, 1) + "\n");
 
   const summary = Object.entries(snap.sources).map(([k, s]) => `${k}=${s.ok ? s.count : "FAIL(" + s.error + ")"}`).join(" ");
-  console.log(`snapshot ${new Date(t * 1000).toISOString()} markets=${snap.markets.length} ${summary} hlBooks=${books.ok}/${books.ok + books.fail}`);
+  console.log(`snapshot ${new Date(t * 1000).toISOString()} markets=${snap.markets.length} ${summary} hlBooks=${books.ok}/${books.ok + books.fail} new7d=${digest.newListings.length}`);
 }
 
 main().catch((e) => {

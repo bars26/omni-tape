@@ -265,3 +265,55 @@ describe("calculator", () => {
     expect(med[11]).toBeNull();
   });
 });
+
+import { buildDigest, change, goneListings, isoWeek, newListings, rowNear, updateListings } from "../src/lib/summary.ts";
+
+describe("summary", () => {
+  const since = 1_000_000;
+  it("tracks listings and backfills first-seen from history", () => {
+    let l = updateListings(null, since, [{ tk: "A", name: "a" }, { tk: "B", name: "b" }], since + 10 * 86400, (tk) => (tk === "A" ? since : since + 9 * 86400));
+    expect(l.markets.A.first).toBe(since);
+    expect(l.markets.B.first).toBe(since + 9 * 86400);
+    const now = since + 10 * 86400;
+    expect(newListings(l, now).map((x) => x.tk)).toEqual(["B"]); // A was there from the start
+    l = updateListings(l, since, [{ tk: "B", name: "b2" }], now + 3 * 3600, () => null);
+    expect(l.markets.B.name).toBe("b2");
+    expect(goneListings(l, now + 3 * 3600).map((x) => x.tk)).toEqual(["A"]);
+    expect(goneListings(l, now + 3600)).toEqual([]); // under two hours missing: not gone yet
+  });
+  it("finds the nearest row within tolerance and computes 24 h changes", () => {
+    const now = 200_000;
+    const rows = [
+      { t: now - 86400, mark: 100, oiL: 60, oiS: 40 },
+      { t: now, mark: 110, oiL: 90, oiS: 60 },
+    ];
+    expect(rowNear(rows, now - 86400 + 600)?.t).toBe(now - 86400);
+    expect(rowNear(rows, now - 50_000)).toBeNull();
+    const c = change(rows, now)!;
+    expect(c.mark).toBeCloseTo(0.1, 9);
+    expect(c.oi).toBeCloseTo(0.5, 9);
+    expect(c.long).toBeCloseTo(0, 9);
+    expect(change([rows[1]], now)).toBeNull();
+  });
+  it("names ISO weeks", () => {
+    expect(isoWeek(Date.UTC(2026, 10, 20) / 1000)).toBe("2026-W47");
+    expect(isoWeek(Date.UTC(2027, 0, 1) / 1000)).toBe("2026-W53");
+    expect(isoWeek(Date.UTC(2026, 0, 1) / 1000)).toBe("2026-W01");
+  });
+  it("builds a weekly digest", () => {
+    const now = 2_000_000;
+    const rows: Record<string, number | null>[] = [];
+    for (let i = 0; i <= 7 * 96; i++) {
+      const t = now - 7 * 86400 + i * 900;
+      rows.push({ t, mark: 100 + i / 100, oiL: 600_000 + i * 1000, oiS: 400_000, fo: 0.2, hl: 0.1, dydx: null, binance: null, bybit: null, lighter: null, o100k: 1, h100k: 5 });
+    }
+    const m = { tk: "X-PERP", base: "X", type: "perp" as const, name: "X", mark: 107, vol: 5e6, oiL: 600_000 + 672_000, oiS: 400_000, fNext: 0.2, fLast: 0.2, intS: 3600, spread: 1, imp100k: 1, o1k: 1, o100k: 1, v: { hl: 0.1 } };
+    const d = buildDigest({ now, markets: [m], history: () => rows, platformRows: [{ t: now - 7 * 86400, vol24: 1, cumVol: 1, tvl: 10, oi: 5, markets: 1 }, { t: now, vol24: 2, cumVol: 3, tvl: 12, oi: 6, markets: 1 }], listings: { since: 0, markets: {} } });
+    expect(d.steadyGaps[0]).toMatchObject({ tk: "X-PERP", value: 1 });
+    expect(d.oiUp[0].tk).toBe("X-PERP");
+    expect(d.oiUp[0].value).toBeCloseTo(672_000 / 1_000_000, 6);
+    expect(d.omniCheaper[0]).toMatchObject({ tk: "X-PERP", value: 4 });
+    expect(d.platform.then?.tvl).toBe(10);
+    expect(d.platform.now.tvl).toBe(12);
+  });
+});

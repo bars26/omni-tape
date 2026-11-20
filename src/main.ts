@@ -1,9 +1,10 @@
 import "./style.css";
 import { renderChart, type Series } from "./chart.ts";
-import { ago, apr, bps, esc, pct, price, usd, when, DASH } from "./format.ts";
+import { ago, apr, bps, chg, esc, pct, price, pts, usd, when, DASH } from "./format.ts";
 import { marketFile, parseCsv, type HistRow } from "./lib/history.ts";
 import { bookCost, midOf, parseHlBook, parseLighterBook, TAKER_FEE, type Level } from "./lib/cost.ts";
 import { normalizeSymbol } from "./lib/venues.ts";
+import { isoWeek, WEEK, type Digest, type DigestRow } from "./lib/summary.ts";
 import { byHour, legEstimate, omniCostAt, pairEstimate, trailingMean, type Side } from "./lib/calc.ts";
 import { venueMedian } from "./lib/snapshot.ts";
 import { VENUE_LABEL, VENUES, type MarketRow, type Snapshot, type Venue } from "./lib/types.ts";
@@ -171,6 +172,9 @@ const SORTERS: Record<string, (m: MarketRow) => number | string | null> = {
   d100k: (m) => diff(m.h100k, m.o100k),
   imp: (m) => m.imp100k,
   pers: steadiness,
+  chg24: (m) => m.d24?.mark ?? null,
+  oi24: (m) => m.d24?.oi ?? null,
+  listed: (m) => m.listed ?? null,
   ...Object.fromEntries(VENUES.map((v) => [v, (m: MarketRow) => m.v[v] ?? null])),
 };
 
@@ -208,6 +212,7 @@ function shell(active: string, body: string): string {
     <a href="#/funding" class="${active === "funding" ? "on" : ""}">Funding gaps</a>
     <a href="#/cost" class="${active === "cost" ? "on" : ""}">Trade cost</a>
     <a href="#/calc" class="${active === "calc" ? "on" : ""}">Calculator</a>
+    <a href="#/week" class="${active === "week" ? "on" : ""}">Weekly</a>
     <a href="#/watch" class="${active === "watch" ? "on" : ""}" id="nav-watch">★ Watchlist${watch.size ? ` <span class="badge">${watch.size}</span>` : ""}</a>
     <a href="#/about" class="${active === "about" ? "on" : ""}">About</a>
   </nav>
@@ -252,6 +257,15 @@ function th(st: ListState, key: string, label: string, title = "", cls = "num"):
   return `<th class="${cls}" ${title ? `title="${esc(title)}"` : ""}><button data-sort="${key}" class="${on ? "on" : ""}">${label}${on ? (st.dir < 0 ? " ↓" : " ↑") : ""}</button></th>`;
 }
 
+function chgCell(x: number | null | undefined, fmt: (v: number | null | undefined) => string = chg): string {
+  if (x === null || x === undefined) return `<td class="num muted">${DASH}</td>`;
+  return `<td class="num ${x > 0 ? "pos" : x < 0 ? "neg" : ""}">${fmt(x)}</td>`;
+}
+
+function newTag(m: MarketRow): string {
+  return m.listed ? ` <span class="tag new" title="Listed on Omni ${when(m.listed)}">NEW</span>` : "";
+}
+
 function fcell(x: number | null | undefined): string {
   if (x === null || x === undefined) return `<td class="num muted">${DASH}</td>`;
   return `<td class="num ${x > 0 ? "pos" : x < 0 ? "neg" : ""}">${apr(x)}</td>`;
@@ -266,10 +280,12 @@ function viewMarkets(): string {
     .map((m) => {
       const ls = longShare(m);
       return `<tr>
-  <td class="mk">${star(m.tk)}<a href="#/m/${encodeURIComponent(m.tk)}" class="tk">${esc(m.tk)}</a><div class="nm">${esc(m.name)}</div></td>
+  <td class="mk">${star(m.tk)}<a href="#/m/${encodeURIComponent(m.tk)}" class="tk">${esc(m.tk)}</a>${newTag(m)}<div class="nm">${esc(m.name)}</div></td>
   <td class="num">${price(m.mark)}</td>
+  ${chgCell(m.d24?.mark)}
   <td class="num">${usd(m.vol)}</td>
   <td class="num">${usd(oi(m))}</td>
+  ${chgCell(m.d24?.oi, (v) => chg(v, 1))}
   <td class="num"><span class="skew" style="--l:${ls === null ? 0.5 : ls}" title="long ${pct(ls)} / short ${ls === null ? DASH : pct(1 - ls)}"></span>${pct(ls)}</td>
   ${fcell(m.fNext)}
   ${fcell(venueMedian(m.v))}
@@ -278,14 +294,19 @@ function viewMarkets(): string {
 </tr>`;
     })
     .join("");
-  return `${controls(list, "list")}
+  const fresh = (snap?.markets ?? []).filter((m) => m.listed).sort((a, b) => b.listed! - a.listed!);
+  return `<section class="platform" id="platform"></section>
+${fresh.length ? `<div class="newbar"><span class="muted">New on Omni this week:</span> ${fresh.map((m) => `<a href="#/m/${encodeURIComponent(m.tk)}" class="chip-link" title="${esc(m.name)} · listed ${when(m.listed!)}">${esc(m.tk)}</a>`).join("")}</div>` : ""}
+${controls(list, "list")}
 <p class="count">${rows.length} markets${rows.length > 400 ? " (first 400 shown)" : ""}</p>
 <div class="table-wrap"><table>
 <thead><tr>
   ${th(list, "tk", "Market", "", "")}
   ${th(list, "mark", "Mark")}
+  ${th(list, "chg24", "24 h", "Mark price change over the last 24 hours")}
   ${th(list, "vol", "24h vol")}
   ${th(list, "oi", "Open int.")}
+  ${th(list, "oi24", "OI 24 h", "Change in total open interest over the last 24 hours")}
   ${th(list, "long", "Long share", "Share of open interest that is long")}
   ${th(list, "f", "Funding", "Omni's next funding rate, annualized")}
   ${th(list, "med", "Elsewhere", "Median annualized funding on Hyperliquid, dYdX, Binance, Bybit and Lighter")}
@@ -446,6 +467,115 @@ ${m ? `<p class="fresh"><a href="#/calc?m=${encodeURIComponent(tk)}">Estimate a 
   document.querySelectorAll<HTMLButtonElement>("[data-range]").forEach((b) => b.addEventListener("click", () => draw(b.dataset.range!)));
   const span = rows.length ? rows[rows.length - 1].t! - rows[0].t! : 0;
   draw(span > 7 * 86400 ? "7D" : span > 3 * 86400 ? "3D" : "All");
+}
+
+// ---------- platform history (markets page) ----------
+
+async function fillPlatform() {
+  const host = document.getElementById("platform");
+  if (!host) return;
+  let rows: HistRow[] = [];
+  try {
+    rows = await getCsv("platform.csv");
+  } catch {
+    host.remove();
+    return;
+  }
+  if (rows.length < 4) return host.remove();
+  host.innerHTML = `<div class="pcharts"><div id="pc-tvl"></div><div id="pc-oi"></div><div id="pc-vol"></div></div>`;
+  const s = (k: string): [number, number | null][] => rows.map((r) => [r.t!, r[k] ?? null]);
+  renderChart(document.getElementById("pc-tvl")!, { title: "Omni TVL", series: [{ label: "TVL", color: COLOR.omni, points: s("tvl") }], fmt: usd, height: 110 });
+  renderChart(document.getElementById("pc-oi")!, { title: "Open interest", series: [{ label: "OI", color: "var(--c1)", points: s("oi") }], fmt: usd, height: 110 });
+  renderChart(document.getElementById("pc-vol")!, { title: "24h volume (rolling)", series: [{ label: "Volume", color: "var(--c4)", points: s("vol24") }], fmt: usd, height: 110 });
+}
+
+// ---------- weekly digest ----------
+
+let digestCache = new Map<string, Digest | null>();
+
+async function loadDigest(name: string): Promise<Digest | null> {
+  if (!digestCache.has(name)) digestCache.set(name, await getJson<Digest>(`digest/${name}.json`).catch(() => null));
+  return digestCache.get(name)!;
+}
+
+function digestText(d: Digest): string {
+  const p = d.platform;
+  const tvl = p.then?.tvl && p.now.tvl ? ` TVL ${usd(p.now.tvl)} (${chg(p.now.tvl / p.then.tvl - 1, 1)})` : "";
+  const parts = [`Omni this week (${d.week}):${tvl}`];
+  if (d.newListings.length) parts.push(`New: ${d.newListings.slice(0, 5).map((x) => x.tk.replace(/-PERP$/, "")).join(", ")}${d.newListings.length > 5 ? ` +${d.newListings.length - 5}` : ""}`);
+  const g = d.steadyGaps.slice(0, 3).map((x) => `${x.tk.replace(/-PERP$/, "")} ${x.detail!.above! >= x.detail!.below! ? "↑" : "↓"}${Math.round(x.value * 100)}%`);
+  if (g.length) parts.push(`Steadiest funding gaps vs other venues: ${g.join(", ")}`);
+  const up = d.oiUp[0];
+  if (up) parts.push(`Biggest OI jump: ${up.tk.replace(/-PERP$/, "")} ${chg(up.value, 0)}`);
+  parts.push("omni-tape.vercel.app/#/week");
+  return parts.join("\n");
+}
+
+function digestList(title: string, note: string, rows: DigestRow[], cell: (r: DigestRow) => string, head: string): string {
+  return `<section class="chart"><div class="chart-head"><h3>${title}</h3></div><p class="note">${note}</p>${
+    rows.length
+      ? `<div class="table-wrap flat"><table><thead><tr><th>Market</th>${head}</tr></thead><tbody>${rows
+          .map((r) => `<tr><td class="mk">${star(r.tk)}<a class="tk" href="#/m/${encodeURIComponent(r.tk)}">${esc(r.tk)}</a><div class="nm">${esc(r.name)}</div></td>${cell(r)}</tr>`)
+          .join("")}</tbody></table></div>`
+      : `<p class="muted empty">Nothing this week.</p>`
+  }</section>`;
+}
+
+async function viewWeek(which: string) {
+  app.innerHTML = shell("week", `<p class="loading">Loading the weekly digest…</p>`);
+  bindShell();
+  const d = await loadDigest(which === "latest" ? "latest" : which);
+  if (!d) {
+    app.innerHTML = shell("week", `<div class="lede"><h1>Weekly digest</h1><p class="warn">No digest for ${esc(which)} yet.</p></div>`);
+    bindShell();
+    return;
+  }
+  const prevWeek = isoWeek(d.t - WEEK);
+  const hasPrev = which === "latest" || which === d.week ? !!(await loadDigest(prevWeek)) : false;
+  const p = d.platform;
+  const pc = (k: "tvl" | "oi" | "vol24") => (p.then && p.then[k] && p.now[k] ? chg(p.now[k]! / p.then[k]! - 1, 1) : DASH);
+  const days = Math.max(1, Math.round((d.t - d.from) / 86400));
+  const steadyCell = (r: DigestRow) => {
+    const x = r.detail!;
+    const hi = x.above! >= x.below!;
+    return `<td class="num"><span class="${hi ? "pos" : "neg"}">${hi ? "higher" : "lower"}</span> ${Math.round(r.value * 100)}% of the time</td><td class="num">${apr(x.avg)}</td>`;
+  };
+  const body = `<div class="lede"><h1>Weekly digest · ${esc(d.week)}</h1><p>What changed on Variational Omni over the ${days === 7 ? "last 7 days" : `last ${days} days (history starts ${when(d.from).slice(0, 10)})`}, from the 15-minute snapshots. Updated with every snapshot; the page for a week stays as it was when the week ended. ${when(d.t)}.</p>
+<div class="week-nav">${hasPrev && which !== prevWeek ? `<a href="#/week/${prevWeek}">← ${prevWeek}</a>` : ""}${which !== "latest" ? `<a href="#/week">This week →</a>` : ""}<button class="link" id="copy-x">Copy summary for X</button><span class="muted" id="copied"></span></div></div>
+<section class="kpis small four">
+  <div><span>TVL</span><b>${usd(p.now.tvl)}</b><small>${pc("tvl")} vs start</small></div>
+  <div><span>Open interest</span><b>${usd(p.now.oi)}</b><small>${pc("oi")} vs start</small></div>
+  <div><span>24h volume</span><b>${usd(p.now.vol24)}</b><small>${pc("vol24")} vs start</small></div>
+  <div><span>Markets</span><b>${p.now.markets}</b><small>${d.newListings.length} new · ${d.gone.length} gone</small></div>
+</section>
+${
+  d.newListings.length || d.gone.length
+    ? `<section class="chart"><div class="chart-head"><h3>Listings</h3></div><div class="newbar">${d.newListings
+        .map((x) => `<a href="#/m/${encodeURIComponent(x.tk)}" class="chip-link" title="${esc(x.name)}">+ ${esc(x.tk)} <span class="muted">${when(x.first).slice(5, 10)}</span></a>`)
+        .join("")}${d.gone.map((x) => `<span class="chip-link gone" title="last seen ${when(x.last)}">− ${esc(x.tk)}</span>`).join("")}</div></section>`
+    : ""
+}
+${digestList("Steadiest funding gaps", "Markets with $100K+ daily volume where Omni's funding stayed on one side of the other venues' median for most of the week.", d.steadyGaps, steadyCell, `<th class="num">Omni vs others</th><th class="num">Avg gap</th>`)}
+<div class="two">
+${digestList("Open interest up", "Markets with $1M+ open interest, change over the window.", d.oiUp, (r) => `<td class="num pos">${chg(r.value, 0)}</td><td class="num">${usd(r.detail!.oiNow)}</td>`, `<th class="num">Change</th><th class="num">OI now</th>`)}
+${digestList("Open interest down", "Same, largest falls.", d.oiDown, (r) => `<td class="num neg">${chg(r.value, 0)}</td><td class="num">${usd(r.detail!.oiNow)}</td>`, `<th class="num">Change</th><th class="num">OI now</th>`)}
+</div>
+${digestList("Biggest shifts in positioning", "Change in the share of open interest that is long.", d.longShift, (r) => `<td class="num ${r.value > 0 ? "pos" : "neg"}">${pts(r.value)}</td><td class="num">${pct(r.detail!.longNow)}</td>`, `<th class="num">Long share change</th><th class="num">Long now</th>`)}
+<div class="two">
+${digestList("Omni cheaper to trade", "Median one-way cost of a $100K market order over the week, Omni's indicative quote vs Hyperliquid's book + fee. Busiest markets first.", d.omniCheaper, (r) => `<td class="num">${bps(r.detail!.omni)}</td><td class="num">${bps(r.detail!.hl)}</td>`, `<th class="num">Omni bps</th><th class="num">HL bps</th>`)}
+${digestList("Hyperliquid cheaper to trade", "Same comparison, the other way round.", d.omniDearer, (r) => `<td class="num">${bps(r.detail!.omni)}</td><td class="num">${bps(r.detail!.hl)}</td>`, `<th class="num">Omni bps</th><th class="num">HL bps</th>`)}
+</div>`;
+  app.innerHTML = shell("week", body);
+  bindShell();
+  document.getElementById("copy-x")?.addEventListener("click", async () => {
+    const out = document.getElementById("copied")!;
+    try {
+      await navigator.clipboard.writeText(digestText(d));
+      out.textContent = "copied";
+    } catch {
+      out.textContent = digestText(d);
+    }
+  });
 }
 
 // ---------- watchlist view ----------
@@ -874,6 +1004,10 @@ function bindList(st: ListState, rerender: () => void) {
 async function route() {
   const h = location.hash.replace(/^#\/?/, "");
   if (h.startsWith("m/")) return viewMarket(decodeURIComponent(h.slice(2)));
+  if (h === "week" || h.startsWith("week/")) {
+    window.scrollTo(0, 0);
+    return viewWeek(h === "week" ? "latest" : decodeURIComponent(h.slice(5)));
+  }
   if (h === "calc" || h.startsWith("calc?")) {
     app.innerHTML = shell("calc", viewCalc());
     bindShell();
@@ -892,6 +1026,7 @@ async function route() {
     app.innerHTML = shell(which, which === "funding" ? viewFunding() : which === "cost" ? viewCost() : which === "about" ? viewAbout() : viewMarkets());
     bindShell();
     if (which !== "about") bindList(which === "funding" ? gaps : which === "cost" ? costs : list, render);
+    if (which === "markets") fillPlatform();
   };
   render();
   window.scrollTo(0, 0);

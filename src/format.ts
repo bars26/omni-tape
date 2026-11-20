@@ -49,3 +49,15 @@ export function when(t: number): string {
 export function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
+
+/** Signed relative change: 0.0123 -> "+1.23%". */
+export function chg(x: number | null | undefined, digits = 2): string {
+  if (x === null || x === undefined || !Number.isFinite(x)) return DASH;
+  return `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x * 100).toFixed(digits)}%`;
+}
+
+/** Signed share points: 0.05 -> "+5.0 pts". */
+export function pts(x: number | null | undefined): string {
+  if (x === null || x === undefined || !Number.isFinite(x)) return DASH;
+  return `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x * 100).toFixed(1)} pts`;
+}

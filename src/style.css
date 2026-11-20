@@ -192,3 +192,18 @@ form.calc .go { font: inherit; font-weight: 600; color: #fff; background: var(--
 .hcell { text-align: center; background: color-mix(in srgb, var(--pos) calc((1 - var(--k)) * 28%), color-mix(in srgb, var(--neg) calc(var(--k) * 22%), transparent)); }
 .hcell.hbest { outline: 2px solid var(--pos); outline-offset: -2px; font-weight: 600; }
 .calc-table .nm { max-width: 260px; white-space: normal; }
+
+/* listings, platform, weekly */
+.tag.new { color: #fff; background: var(--pos); font-size: 10px; vertical-align: 1px; }
+.newbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0 2px; font-size: 13px; }
+.chip-link { display: inline-block; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; font-weight: 600; }
+.chip-link.gone { color: var(--muted); text-decoration: line-through; font-weight: 500; }
+.pcharts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.pcharts .chart { margin-top: 0; }
+.pcharts .chart svg { height: 110px; }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.week-nav { display: flex; gap: 14px; align-items: center; margin-top: 10px; font-size: 13px; flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .pcharts, .two { grid-template-columns: 1fr; }
+}
+.kpis.four { grid-template-columns: repeat(4, 1fr); } @media (max-width: 760px) { .kpis.four { grid-template-columns: repeat(2, 1fr); } .kpis.four > div:last-child { grid-column: auto; } }
