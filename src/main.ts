@@ -4,6 +4,7 @@ import { ago, apr, bps, esc, pct, price, usd, when, DASH } from "./format.ts";
 import { marketFile, parseCsv, type HistRow } from "./lib/history.ts";
 import { bookCost, midOf, parseHlBook, parseLighterBook, TAKER_FEE, type Level } from "./lib/cost.ts";
 import { normalizeSymbol } from "./lib/venues.ts";
+import { byHour, legEstimate, omniCostAt, pairEstimate, trailingMean, type Side } from "./lib/calc.ts";
 import { venueMedian } from "./lib/snapshot.ts";
 import { VENUE_LABEL, VENUES, type MarketRow, type Snapshot, type Venue } from "./lib/types.ts";
 
@@ -206,6 +207,7 @@ function shell(active: string, body: string): string {
     <a href="#/" class="${active === "markets" ? "on" : ""}">Markets</a>
     <a href="#/funding" class="${active === "funding" ? "on" : ""}">Funding gaps</a>
     <a href="#/cost" class="${active === "cost" ? "on" : ""}">Trade cost</a>
+    <a href="#/calc" class="${active === "calc" ? "on" : ""}">Calculator</a>
     <a href="#/watch" class="${active === "watch" ? "on" : ""}" id="nav-watch">★ Watchlist${watch.size ? ` <span class="badge">${watch.size}</span>` : ""}</a>
     <a href="#/about" class="${active === "about" ? "on" : ""}">About</a>
   </nav>
@@ -400,8 +402,9 @@ ${m ? `<section class="kpis small">
   <div><span>Spread · $100K</span><b>${bps(m.spread)} · ${bps(m.imp100k)} bps</b></div>
 </section>
 ${m.p24 && m.p24.n >= MIN_PERSIST ? `<p class="fresh">Last 24 h: Omni's funding was above the other venues' median in <b>${m.p24.above}</b> of ${m.p24.n} snapshots and below it in <b>${m.p24.below}</b> (average gap ${apr(m.p24.avg)}).</p>` : ""}` : ""}
+${m ? `<p class="fresh"><a href="#/calc?m=${encodeURIComponent(tk)}">Estimate a trade on ${esc(tk)} in dollars →</a></p>` : ""}
 <div class="range" role="group" aria-label="Range">${["1D", "3D", "7D", "30D", "All"].map((r) => `<button data-range="${r}">${r}</button>`).join("")}</div>
-<div id="c-f"></div><section class="chart" id="live-cost"><div class="chart-head"><h3>Cost to trade now</h3><button class="link" id="live-refresh">Refresh</button></div><p class="muted empty">Loading order books…</p></section><div id="c-c"></div><div id="c-oi"></div><div id="c-p"></div><div id="c-v"></div>`,
+<div id="c-f"></div><section class="chart" id="live-cost"><div class="chart-head"><h3>Cost to trade now</h3><button class="link" id="live-refresh">Refresh</button></div><p class="muted empty">Loading order books…</p></section><div id="c-c"></div><div id="c-hour"></div><div id="c-oi"></div><div id="c-p"></div><div id="c-v"></div>`,
   );
   bindShell();
   if (m) liveCost(m);
@@ -412,6 +415,7 @@ ${m.p24 && m.p24.n >= MIN_PERSIST ? `<p class="fresh">Last 24 h: Omni's funding 
     document.getElementById("c-f")!.innerHTML = `<p class="warn">Could not load history: ${esc(String(e))}</p>`;
     return;
   }
+  renderHours(document.getElementById("c-hour")!, rows);
   const draw = (range: string) => {
     document.querySelectorAll<HTMLButtonElement>("[data-range]").forEach((b) => b.classList.toggle("on", b.dataset.range === range));
     const last = rows.length ? rows[rows.length - 1].t! : 0;
@@ -511,6 +515,233 @@ async function fillWatch() {
   );
 }
 
+// ---------- cost by hour of day (market page) ----------
+
+function renderHours(host: HTMLElement, rows: HistRow[]) {
+  const now = rows.length ? rows[rows.length - 1].t! : 0;
+  const span = rows.length ? now - rows[0].t! : 0;
+  const series: [string, string, (number | null)[]][] = [
+    ["Omni", "o100k", byHour(rows, "o100k", now)],
+    ["Hyperliquid", "h100k", byHour(rows, "h100k", now)],
+  ];
+  const have = series.filter(([, , xs]) => xs.filter((x) => x !== null).length >= 12);
+  const title = `<div class="chart-head"><h3>$100K market order by hour of day (UTC), median of the last 7 days</h3></div>`;
+  if (span < 2 * 86400 || !have.length) {
+    host.innerHTML = `<section class="chart">${title}<p class="muted empty">Needs at least two days of history.</p></section>`;
+    return;
+  }
+  const cells = (xs: (number | null)[]) => {
+    const vals = xs.filter((x): x is number => x !== null);
+    const lo = Math.min(...vals);
+    const hi = Math.max(...vals);
+    const best = xs.indexOf(lo);
+    return xs
+      .map((x, i) => {
+        if (x === null) return `<td class="hcell muted">·</td>`;
+        const k = hi > lo ? (x - lo) / (hi - lo) : 0; // 0 = cheapest
+        return `<td class="hcell${i === best ? " hbest" : ""}" style="--k:${k.toFixed(2)}" title="${String(i).padStart(2, "0")}:00 UTC: ${bps(x)} bps">${bps(x)}</td>`;
+      })
+      .join("");
+  };
+  const summary = have
+    .map(([name, , xs]) => {
+      const vals = xs.filter((x): x is number => x !== null);
+      const lo = Math.min(...vals);
+      const hi = Math.max(...vals);
+      return `${name} is cheapest around <b>${String(xs.indexOf(lo)).padStart(2, "0")}:00 UTC</b> (${bps(lo)} bps) and dearest around ${String(xs.indexOf(hi)).padStart(2, "0")}:00 (${bps(hi)} bps)`;
+    })
+    .join("; ");
+  host.innerHTML = `<section class="chart">${title}<p class="note">${summary}.</p><div class="table-wrap flat hours"><table>
+<thead><tr><th></th>${Array.from({ length: 24 }, (_, i) => `<th class="num">${String(i).padStart(2, "0")}</th>`).join("")}</tr></thead>
+<tbody>${have.map(([name, , xs]) => `<tr><td><b>${name}</b></td>${cells(xs)}</tr>`).join("")}</tbody></table></div>
+<p class="note">One-way cost in bps, fees included; greener is cheaper within each row. Hours with fewer than 3 snapshots are left blank.</p></section>`;
+}
+
+// ---------- calculator ----------
+
+type CalcVenue = "omni" | "hl" | "lighter";
+const CALC_VENUES: CalcVenue[] = ["omni", "hl", "lighter"];
+const CALC_LABEL: Record<CalcVenue, string> = { omni: "Omni", hl: "Hyperliquid", lighter: "Lighter" };
+
+interface CalcState {
+  mode: "one" | "pair";
+  m: string;
+  side: Side;
+  size: number;
+  hold: number;
+  unit: "h" | "d";
+  longOn: CalcVenue;
+  shortOn: CalcVenue;
+}
+
+function readCalc(): CalcState {
+  const q = new URLSearchParams(location.hash.split("?")[1] ?? "");
+  const pick = <T extends string>(v: string | null, ok: readonly T[], d: T): T => (v && (ok as readonly string[]).includes(v) ? (v as T) : d);
+  const num = (v: string | null, d: number) => (v !== null && Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
+  return {
+    mode: pick(q.get("mode"), ["one", "pair"] as const, "one"),
+    m: q.get("m") ?? "BTC-PERP",
+    side: pick(q.get("side"), ["long", "short"] as const, "long"),
+    size: num(q.get("size"), 10_000),
+    hold: num(q.get("hold"), 3),
+    unit: pick(q.get("unit"), ["h", "d"] as const, "d"),
+    longOn: pick(q.get("long"), CALC_VENUES, "omni"),
+    shortOn: pick(q.get("short"), CALC_VENUES, "hl"),
+  };
+}
+
+function writeCalc(st: CalcState) {
+  const q = new URLSearchParams({ mode: st.mode, m: st.m, size: String(st.size), hold: String(st.hold), unit: st.unit });
+  if (st.mode === "one") q.set("side", st.side);
+  else {
+    q.set("long", st.longOn);
+    q.set("short", st.shortOn);
+  }
+  history.replaceState(null, "", `#/calc?${q}`);
+}
+
+function money(x: number | null | undefined, signed = false): string {
+  if (x === null || x === undefined || !Number.isFinite(x)) return DASH;
+  const a = Math.abs(x);
+  const s = a >= 1000 ? a.toLocaleString("en-US", { maximumFractionDigits: 0 }) : a.toFixed(2);
+  return `${x < 0 ? "−" : signed && x > 0 ? "+" : ""}$${s}`;
+}
+function moneyCell(x: number | null | undefined, cls = ""): string {
+  return `<td class="num ${cls} ${x !== null && x !== undefined && x < 0 ? "pos" : ""}">${money(x)}</td>`;
+}
+function hoursText(h: number | null): string {
+  if (h === null || !Number.isFinite(h)) return "never at this rate";
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`;
+  if (h < 48) return `${h.toFixed(1)} h`;
+  return `${(h / 24).toFixed(1)} days`;
+}
+
+function viewCalc(): string {
+  const st = readCalc();
+  const opts = (snap?.markets ?? []).map((m) => `<option value="${esc(m.tk)}">${esc(m.name)}</option>`).join("");
+  const venueSel = (k: string, v: CalcVenue) => `<select data-c="${k}">${CALC_VENUES.map((x) => `<option value="${x}" ${x === v ? "selected" : ""}>${CALC_LABEL[x]}</option>`).join("")}</select>`;
+  return `<div class="lede"><h1>Trade calculator</h1><p>What a position costs in dollars: opening and closing it (spread, slippage and taker fee) plus funding over the time you hold it, on Omni, Hyperliquid and Lighter. Funding is shown at the current rate and at the average of the last 24 hours, since it changes every interval. Price moves are not included. An estimate, not a quote and not advice.</p></div>
+<div class="calc-tabs" role="tablist">
+  <button data-mode="one" class="${st.mode === "one" ? "on" : ""}">One position</button>
+  <button data-mode="pair" class="${st.mode === "pair" ? "on" : ""}">Long one venue, short another</button>
+</div>
+<form class="calc" id="calc-form">
+  <label>Market<input list="calc-markets" data-c="m" value="${esc(st.m)}" autocomplete="off" spellcheck="false"><datalist id="calc-markets">${opts}</datalist></label>
+  ${st.mode === "one" ? `<label>Side<select data-c="side"><option value="long" ${st.side === "long" ? "selected" : ""}>Long</option><option value="short" ${st.side === "short" ? "selected" : ""}>Short</option></select></label>` : `<label>Long on${venueSel("long", st.longOn)}</label><label>Short on${venueSel("short", st.shortOn)}</label>`}
+  <label>Size (USD)<input type="number" min="10" step="any" data-c="size" value="${st.size}"></label>
+  <label>Hold<span class="pair"><input type="number" min="0.1" step="any" data-c="hold" value="${st.hold}"><select data-c="unit"><option value="h" ${st.unit === "h" ? "selected" : ""}>hours</option><option value="d" ${st.unit === "d" ? "selected" : ""}>days</option></select></span></label>
+  <button type="submit" class="go">Calculate</button>
+</form>
+<div id="calc-out"></div>`;
+}
+
+function bindCalc() {
+  const form = document.getElementById("calc-form") as HTMLFormElement | null;
+  if (!form) return;
+  const collect = (): CalcState => {
+    const st = readCalc();
+    const get = (k: string) => form.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-c="${k}"]`)?.value ?? "";
+    st.m = get("m").trim().toUpperCase() || st.m;
+    st.size = Number(get("size")) > 0 ? Number(get("size")) : st.size;
+    st.hold = Number(get("hold")) > 0 ? Number(get("hold")) : st.hold;
+    st.unit = get("unit") === "h" ? "h" : "d";
+    if (st.mode === "one") st.side = get("side") === "short" ? "short" : "long";
+    else {
+      st.longOn = (get("long") as CalcVenue) || st.longOn;
+      st.shortOn = (get("short") as CalcVenue) || st.shortOn;
+    }
+    return st;
+  };
+  document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const st = collect();
+      st.mode = b.dataset.mode === "pair" ? "pair" : "one";
+      writeCalc(st);
+      route();
+    }),
+  );
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const st = collect();
+    writeCalc(st);
+    runCalc(st);
+  });
+  runCalc(readCalc());
+}
+
+let calcRun = 0;
+async function runCalc(st: CalcState) {
+  const out = document.getElementById("calc-out")!;
+  const run = ++calcRun;
+  const m = snap?.markets.find((x) => x.tk === st.m);
+  if (!m) {
+    out.innerHTML = `<p class="warn">No market called ${esc(st.m)} in the latest snapshot. Pick one from the list.</p>`;
+    return;
+  }
+  if (st.mode === "pair" && st.longOn === st.shortOn) {
+    out.innerHTML = `<p class="warn">Pick two different venues for the long and the short.</p>`;
+    return;
+  }
+  out.innerHTML = `<p class="muted">Reading order books and the last 24 hours of funding…</p>`;
+  const hours = st.unit === "d" ? st.hold * 24 : st.hold;
+  const perp = m.type === "perp";
+  const settle = (p: Promise<(number | null)[] | string>) => p.catch(() => "unavailable" as const);
+  const [rows, hl, lt] = await Promise.all([
+    getCsv(marketFile(m.tk)).catch(() => []),
+    perp ? settle(hlCosts(m.base, [st.size])) : Promise.resolve("not compared" as const),
+    perp ? settle(lighterCosts(m.base, [st.size])) : Promise.resolve("not compared" as const),
+  ]);
+  if (run !== calcRun) return; // a newer calculation started
+  const now = snap?.t ?? Date.now() / 1000;
+  const cost: Record<CalcVenue, number | null> = {
+    omni: omniCostAt(st.size, m.o1k, m.o100k),
+    hl: typeof hl === "string" ? null : hl[0],
+    lighter: typeof lt === "string" ? null : lt[0],
+  };
+  const why: Record<CalcVenue, string> = {
+    omni: st.size > 100_000 ? "Omni quotes up to $100K" : cost.omni === null ? "no quote" : st.size === 1_000 || st.size === 100_000 ? "indicative quote, no fee" : "between its $1K and $100K quotes, no fee",
+    hl: typeof hl === "string" ? hl : cost.hl === null ? "book too thin for this size" : "live book + 4.5 bps fee",
+    lighter: typeof lt === "string" ? lt : cost.lighter === null ? "book too thin for this size" : "live book, no fee",
+  };
+  const rateNow: Record<CalcVenue, number | null> = { omni: m.fNext, hl: m.v.hl ?? null, lighter: m.v.lighter ?? null };
+  const rateAvg: Record<CalcVenue, number | null> = {
+    omni: trailingMean(rows, "fo", now),
+    hl: trailingMean(rows, "hl", now),
+    lighter: trailingMean(rows, "lighter", now),
+  };
+  const head = `<p class="count">${esc(m.tk)} · ${usd(st.size)} · held ${st.hold} ${st.unit === "d" ? (st.hold === 1 ? "day" : "days") : st.hold === 1 ? "hour" : "hours"} · negative amounts (green) are money you receive</p>`;
+  const foot = `<p class="note">Entry and exit each use the one-way cost of a market order of this size (buy and sell averaged), so the exit is assumed to cost what the entry did. Funding assumes the rate holds for the whole hold; positive rates mean longs pay shorts on all three venues. Omni's numbers come from its indicative quotes ${ago(m ? (snap?.t ?? now) : now)}; its firm quote on submit can differ.</p>`;
+
+  if (st.mode === "one") {
+    const est = CALC_VENUES.map((v) => ({ v, e: legEstimate(st.size, hours, st.side, cost[v], rateNow[v], rateAvg[v]) }));
+    const best = est.filter((x) => x.e.totalNow !== null).sort((a, b) => a.e.totalNow! - b.e.totalNow!)[0]?.v;
+    out.innerHTML = `${head}<div class="table-wrap"><table class="calc-table">
+<thead><tr><th>Venue</th><th class="num">Open</th><th class="num">Close</th><th class="num">Funding now</th><th class="num">Funding 24 h avg</th><th class="num">Total now</th><th class="num">Total 24 h avg</th></tr></thead>
+<tbody>${est
+      .map(
+        ({ v, e }) => `<tr class="${v === best ? "best" : ""}"><td><b>${CALC_LABEL[v]}</b>${v === best ? ' <span class="tag omni">lowest</span>' : ""}<div class="nm">${esc(why[v])}</div></td>
+${moneyCell(e.entry)}${moneyCell(e.exit)}${moneyCell(e.fundingNow)}${moneyCell(e.fundingAvg)}${moneyCell(e.totalNow, "strong")}${moneyCell(e.totalAvg, "strong")}</tr>`,
+      )
+      .join("")}</tbody></table></div>${foot}`;
+    return;
+  }
+
+  const leg = (v: CalcVenue) => ({ bps: cost[v], rateNow: rateNow[v], rateAvg: rateAvg[v] });
+  const p = pairEstimate(st.size, hours, leg(st.longOn), leg(st.shortOn));
+  const line = (label: string, a: string, b: string) => `<tr><td>${label}</td><td class="num">${a}</td><td class="num">${b}</td></tr>`;
+  out.innerHTML = `${head}<div class="table-wrap"><table class="calc-table">
+<thead><tr><th>Long ${CALC_LABEL[st.longOn]} · short ${CALC_LABEL[st.shortOn]}</th><th class="num">At current funding</th><th class="num">At 24 h average</th></tr></thead>
+<tbody>
+${line(`Funding rate, long leg (${CALC_LABEL[st.longOn]})`, apr(rateNow[st.longOn]), apr(rateAvg[st.longOn]))}
+${line(`Funding rate, short leg (${CALC_LABEL[st.shortOn]})`, apr(rateNow[st.shortOn]), apr(rateAvg[st.shortOn]))}
+${line("Trading cost, 4 fills", money(p.trading), money(p.trading))}
+${line("Net funding per day", `<span class="${(p.fundingPerDayNow ?? 0) < 0 ? "pos" : ""}">${money(p.fundingPerDayNow)}</span>`, `<span class="${(p.fundingPerDayAvg ?? 0) < 0 ? "pos" : ""}">${money(p.fundingPerDayAvg)}</span>`)}
+${line("<b>Total over the hold</b>", `<b class="${(p.totalNow ?? 0) < 0 ? "pos" : ""}">${money(p.totalNow)}</b>`, `<b class="${(p.totalAvg ?? 0) < 0 ? "pos" : ""}">${money(p.totalAvg)}</b>`)}
+${line("Hold needed to cover trading cost", hoursText(p.breakEvenHoursNow), hoursText(p.breakEvenHoursAvg))}
+</tbody></table></div>
+<p class="note">Cost notes: ${CALC_LABEL[st.longOn]}: ${esc(why[st.longOn])}; ${CALC_LABEL[st.shortOn]}: ${esc(why[st.shortOn])}. The two legs offset price moves only while both stay open; each venue margins its leg separately, and venues settle funding on different schedules (Omni 1–8 h, Hyperliquid and Lighter hourly).</p>${foot}`;
+}
+
 // ---------- live order books (market page) ----------
 
 const LIVE_SIZES = [1_000, 10_000, 100_000];
@@ -536,13 +767,13 @@ async function hlCoin(base: string): Promise<string | null> {
   return names.find((n) => n.toUpperCase() === want) ?? names.find((n) => normalizeSymbol(n) === want) ?? null;
 }
 
-async function hlCosts(base: string): Promise<(number | null)[] | string> {
+async function hlCosts(base: string, sizes: number[] = LIVE_SIZES): Promise<(number | null)[] | string> {
   const coin = await hlCoin(base);
   if (!coin) return "not listed";
   const full = await hlBook(coin);
   const mid = midOf(full.bids, full.asks) ?? undefined;
   const out: (number | null)[] = [];
-  for (const size of LIVE_SIZES) {
+  for (const size of sizes) {
     let c = bookCost(full.bids, full.asks, size, TAKER_FEE.hl);
     for (const n of [5, 4, 3]) {
       if (c !== null) break;
@@ -554,7 +785,7 @@ async function hlCosts(base: string): Promise<(number | null)[] | string> {
   return out;
 }
 
-async function lighterCosts(base: string): Promise<(number | null)[] | string> {
+async function lighterCosts(base: string, sizes: number[] = LIVE_SIZES): Promise<(number | null)[] | string> {
   lighterMarkets ??= fetch(`${LIGHTER}/orderBooks`)
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Lighter HTTP ${r.status}`))))
     .then((d) => {
@@ -567,7 +798,7 @@ async function lighterCosts(base: string): Promise<(number | null)[] | string> {
   const res = await fetch(`${LIGHTER}/orderBookOrders?market_id=${id}&limit=250`);
   if (!res.ok) throw new Error(`Lighter HTTP ${res.status}`);
   const { bids, asks } = parseLighterBook(await res.json());
-  return LIVE_SIZES.map((size) => bookCost(bids, asks, size, TAKER_FEE.lighter));
+  return sizes.map((size) => bookCost(bids, asks, size, TAKER_FEE.lighter));
 }
 
 async function liveCost(m: MarketRow) {
@@ -643,6 +874,13 @@ function bindList(st: ListState, rerender: () => void) {
 async function route() {
   const h = location.hash.replace(/^#\/?/, "");
   if (h.startsWith("m/")) return viewMarket(decodeURIComponent(h.slice(2)));
+  if (h === "calc" || h.startsWith("calc?")) {
+    app.innerHTML = shell("calc", viewCalc());
+    bindShell();
+    bindCalc();
+    window.scrollTo(0, 0);
+    return;
+  }
   const which = h === "funding" ? "funding" : h === "cost" ? "cost" : h === "about" ? "about" : h === "watch" ? "watch" : "markets";
   const render = () => {
     if (which === "watch") {

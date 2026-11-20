@@ -214,3 +214,54 @@ describe("persistence", () => {
     expect(persistence([row(now, 0.1, {})], now)).toBeNull();
   });
 });
+
+import { byHour, fundingUsd, legEstimate, omniCostAt, pairEstimate, trailingMean } from "../src/lib/calc.ts";
+
+describe("calculator", () => {
+  it("interpolates Omni's cost between its two quoted sizes", () => {
+    expect(omniCostAt(500, 1, 10)).toBe(1);
+    expect(omniCostAt(1_000, 1, 10)).toBe(1);
+    expect(omniCostAt(50_500, 1, 10)).toBeCloseTo(5.5, 9);
+    expect(omniCostAt(100_000, 1, 10)).toBe(10);
+    expect(omniCostAt(100_001, 1, 10)).toBeNull(); // no quote above $100K
+    expect(omniCostAt(5_000, null, 10)).toBeNull();
+    expect(omniCostAt(0, 1, 10)).toBeNull();
+  });
+  it("charges longs and pays shorts when funding is positive", () => {
+    // $10,000 at 87.6%/yr for 24 h = $24
+    expect(fundingUsd(10_000, 0.876, 24, "long")).toBeCloseTo(24, 9);
+    expect(fundingUsd(10_000, 0.876, 24, "short")).toBeCloseTo(-24, 9);
+    expect(fundingUsd(10_000, -0.876, 24, "long")).toBeCloseTo(-24, 9);
+  });
+  it("adds entry, exit and funding for one position", () => {
+    const e = legEstimate(10_000, 24, "long", 5, 0.876, null);
+    expect(e).toMatchObject({ entry: 5, exit: 5, fundingNow: 24, fundingAvg: null, totalAvg: null });
+    expect(e.totalNow).toBeCloseTo(34, 9);
+    expect(legEstimate(10_000, 24, "short", null, 0.1, 0.1).totalNow).toBeNull();
+  });
+  it("nets two legs and finds the break-even hold", () => {
+    // long where funding is -43.8%/yr (you collect $12/day), short where +43.8%/yr (you collect $12/day)
+    const p = pairEstimate(10_000, 48, { bps: 1, rateNow: -0.438, rateAvg: 0 }, { bps: 2, rateNow: 0.438, rateAvg: 0 });
+    expect(p.trading).toBeCloseTo(6, 9); // 2*$1 + 2*$2
+    expect(p.fundingPerDayNow).toBeCloseTo(-24, 9);
+    expect(p.totalNow).toBeCloseTo(6 - 48, 9);
+    expect(p.breakEvenHoursNow).toBeCloseTo(6, 9); // $6 / $24 per day = 6 h
+    expect(p.fundingPerDayAvg).toBe(0);
+    expect(p.breakEvenHoursAvg).toBeNull(); // nothing collected: never breaks even
+  });
+  it("averages and buckets history", () => {
+    const now = Date.UTC(2026, 10, 20, 12) / 1000;
+    const rows = [
+      { t: now - 3600, x: 1 },
+      { t: now - 1800, x: 3 },
+      { t: now - 90_000, x: 100 },
+      { t: now, x: null },
+    ];
+    expect(trailingMean(rows, "x", now)).toBe(2);
+    expect(trailingMean(rows, "y", now)).toBeNull();
+    const h = Array.from({ length: 5 }, (_, i) => ({ t: now - i * 86400, x: i })); // same UTC hour, 5 days
+    const med = byHour(h, "x", now);
+    expect(med[12]).toBe(2);
+    expect(med[11]).toBeNull();
+  });
+});
