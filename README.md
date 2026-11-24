@@ -10,7 +10,7 @@ Omni publishes one read-only endpoint, `GET /metadata/v2/stats`, with the curren
 - Each snapshot also records the same market's funding on **Hyperliquid** and **dYdX** (their public APIs) and on **Binance**, **Bybit** and **Lighter** (Lighter's public funding feed, which reports 8-hour rates). Every rate is annualized so they compare directly.
 - History is stored as plain CSV on the [`data`](../../tree/data) branch, one file per market: every snapshot for the last 7 days, hourly to 30 days, every 4 hours after that.
 - The site is static (Vite + TypeScript, no framework, no backend) and reads the `data` branch directly.
-- Pages: markets (with 24 h price/OI change, new listings, platform charts), funding gaps (with how long each gap has held over 24 h), trade cost, a dollar **calculator** (one position, or long one venue and short another, with funding at the current rate and the 24 h average), a **weekly digest**, a browser-only **watchlist**, and per-market history with cost by hour of day.
+- Pages: markets (with 24 h price/OI change, new listings, platform charts), funding gaps (with how long each gap has held over 24 h), trade cost, a dollar **calculator** (one position, or long one venue and short another, with funding at the current rate and the 24 h average), a **weekly digest**, a **VAR points → airdrop estimate** (FDV slider up to $10B, HYPE and LIT launch/low/peak FDVs as benchmarks, what your points cost in spread, and a shareable link; plain arithmetic in [`src/lib/airdrop.ts`](src/lib/airdrop.ts)), a browser-only **watchlist**, and per-market history with cost by hour of day.
 
 ## Data
 

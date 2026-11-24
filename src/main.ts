@@ -6,6 +6,7 @@ import { bookCost, midOf, parseHlBook, parseLighterBook, TAKER_FEE, type Level }
 import { normalizeSymbol } from "./lib/venues.ts";
 import { isoWeek, WEEK, type Digest, type DigestRow } from "./lib/summary.ts";
 import { byHour, legEstimate, omniCostAt, pairEstimate, trailingMean, type Side } from "./lib/calc.ts";
+import { BENCH_AIRDROP, BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, FDV_MAX, fdvFromSlider, perPoint, pointsFor, readDrop, SCENARIOS, sliderFromFdv, writeDrop, type DropState } from "./lib/airdrop.ts";
 import { venueMedian } from "./lib/snapshot.ts";
 import { VENUE_LABEL, VENUES, type MarketRow, type Snapshot, type Venue } from "./lib/types.ts";
 
@@ -212,6 +213,7 @@ function shell(active: string, body: string): string {
     <a href="#/funding" class="${active === "funding" ? "on" : ""}">Funding gaps</a>
     <a href="#/cost" class="${active === "cost" ? "on" : ""}">Trade cost</a>
     <a href="#/calc" class="${active === "calc" ? "on" : ""}">Calculator</a>
+    <a href="#/var" class="${active === "var" ? "on" : ""}">VAR points</a>
     <a href="#/week" class="${active === "week" ? "on" : ""}">Weekly</a>
     <a href="#/watch" class="${active === "watch" ? "on" : ""}" id="nav-watch">★ Watchlist${watch.size ? ` <span class="badge">${watch.size}</span>` : ""}</a>
     <a href="#/about" class="${active === "about" ? "on" : ""}">About</a>
@@ -1001,12 +1003,180 @@ function bindList(st: ListState, rerender: () => void) {
   );
 }
 
+// ---------- VAR points -> airdrop ----------
+
+const fdvText = (x: number) => (x >= 1e9 ? `$${+(x / 1e9).toFixed(2)}B` : x >= 1e6 ? `$${Math.round(x / 1e6)}M` : `$${Math.max(1, Math.round(x / 1e3))}K`);
+const ptsText = (x: number) => (Number.isFinite(x) ? Math.ceil(x).toLocaleString("en-US") : DASH);
+const perPtText = (x: number) =>
+  !Number.isFinite(x) ? DASH : x >= 1000 ? `$${Math.round(x).toLocaleString("en-US")}` : x >= 10 ? `$${x.toFixed(1)}` : x >= 1 ? `$${x.toFixed(2)}` : `$${x.toPrecision(2)}`;
+const timesText = (x: number) => (x >= 100 ? Math.round(x).toLocaleString("en-US") : x.toFixed(1));
+
+/** Volume-weighted typical Omni one-way cost at $1K across liquid markets, in bps. */
+function typicalOmniBps(): number | null {
+  const ms = (snap?.markets ?? []).filter((m) => m.o1k !== null && (m.vol ?? 0) >= 1_000_000);
+  const w = ms.reduce((a, m) => a + m.vol!, 0);
+  return w > 0 ? ms.reduce((a, m) => a + m.o1k! * m.vol!, 0) / w : null;
+}
+
+function viewDrop(): string {
+  const st = readDrop(location.hash.split("?")[1] ?? "");
+  const num = (k: string, v: number | string, extra = "") => `<input type="number" min="0" step="any" data-d="${k}" value="${v}" ${extra}>`;
+  return `<div class="lede"><h1>VAR points → airdrop estimate</h1><p>Type your Variational points and pick an FDV to see what they might be worth at TGE, next to where HYPE and LIT traded at launch, at their lows and at their peaks. Arithmetic on public numbers, not a prediction and not advice.</p></div>
+<form class="calc" id="drop-form" onsubmit="return false">
+  <label>Your points${num("pts", st.points)}</label>
+  <label>Target (USD, optional)${num("target", st.target || "", 'placeholder="e.g. 5000"')}</label>
+  <label>Total points at TGE${num("total", st.total)}</label>
+  <label>Airdrop share (%)${num("share", +(st.share * 100).toFixed(2), 'max="100"')}</label>
+</form>
+<section class="drop-fdv">
+  <div class="drop-fdv-head"><span>FDV</span><b id="drop-fdv-val">${fdvText(st.fdv)}</b></div>
+  <input type="range" id="drop-slider" min="0" max="1000" step="1" value="${sliderFromFdv(st.fdv)}" aria-label="FDV">
+  <div class="drop-chips">${SCENARIOS.map((f) => `<button type="button" data-fdv="${f}">${fdvText(f)}</button>`).join("")}</div>
+</section>
+<div id="drop-out"></div>`;
+}
+
+function dropOut(st: DropState): string {
+  const per = perPoint(st.fdv, st.total, st.share);
+  const yours = per * st.points;
+  const tgt = st.target > 0;
+  const cards = `<section class="kpis drop-kpis">
+  <div><span>One point at ${fdvText(st.fdv)}</span><b>${perPtText(per)}</b></div>
+  <div><span>Your ${ptsText(st.points)} points</span><b>${money(yours)}</b></div>
+  <div><span>${tgt ? `Points for ${money(st.target)}` : "Your share of the drop"}</span><b>${tgt ? ptsText(pointsFor(st.target, st.fdv, st.total, st.share)) : `${((st.points / st.total) * 100).toPrecision(2)}%`}</b></div>
+</section>`;
+
+  const row = (fdv: number, lead: string, cls = "") => {
+    const p = perPoint(fdv, st.total, st.share);
+    return `<tr class="${cls}">${lead}<td class="num">${fdvText(fdv)}</td><td class="num">${perPtText(p)}</td><td class="num strong">${money(p * st.points)}</td>${tgt ? `<td class="num">${ptsText(pointsFor(st.target, fdv, st.total, st.share))}</td>` : ""}</tr>`;
+  };
+  const tgtTh = tgt ? `<th class="num">Points for ${money(st.target)}</th>` : "";
+  const scen = `<section class="chart"><div class="chart-head"><h3>FDV scenarios</h3></div><div class="table-wrap flat"><table class="calc-table">
+<thead><tr><th class="num">FDV</th><th class="num">Per point</th><th class="num">Your drop</th>${tgtTh}</tr></thead>
+<tbody>${[...new Set([...SCENARIOS, st.fdv])].sort((a, b) => a - b).map((f) => row(f, "", f === st.fdv ? "best" : "")).join("")}</tbody></table></div></section>`;
+
+  const bench = `<section class="chart"><div class="chart-head"><h3>If VAR traded where HYPE and LIT did</h3></div>
+<p class="note">VAR's FDV set equal to each token's FDV on that day (price × 1B max supply, daily close on the token's own spot market). The ${(st.share * 100).toFixed(0)}% VAR share is applied, not HYPE's ${BENCH_AIRDROP.HYPE * 100}% or LIT's ${BENCH_AIRDROP.LIT * 100}%. Click a row to use its FDV${BENCHMARKS.some((x) => x.fdv > FDV_MAX) ? "; the slider stops at $10B" : ""}.</p>
+<div class="table-wrap flat"><table class="calc-table">
+<thead><tr><th>Token</th><th>Moment</th><th>Date</th><th class="num">Price</th><th class="num">FDV</th><th class="num">Per point</th><th class="num">Your drop</th>${tgtTh}</tr></thead>
+<tbody>${BENCHMARKS.map((x) => row(x.fdv, `<td><b>${x.token}</b></td><td class="nm" ${x.note ? `title="${esc(x.note)}"` : ""}>${x.label}</td><td>${x.date}</td><td class="num">$${x.price}</td>`, `bench ${x.fdv <= FDV_MAX ? "pick" : ""}" data-bfdv="${x.fdv}`)).join("")}</tbody></table></div></section>`;
+
+  const typical = typicalOmniBps();
+  const cbps = st.cbps > 0 ? st.cbps : typical ?? 0;
+  const cpp = costPerPoint(st.vol, cbps, st.points);
+  const be = breakEvenFdv(cpp, st.total, st.share);
+  const cost = `<section class="chart"><div class="chart-head"><h3>What did your points cost?</h3></div>
+<p class="note">Omni charges no fees; you pay the spread. Enter the volume you traded and the cost per fill to get a price per point and the FDV where the drop pays it back. The default is today's volume-weighted Omni cost for a $1K order across markets with $1M+ daily volume${typical !== null ? ` (${bps(typical)} bps)` : ""}; larger orders cost more (see Trade cost). Funding and price moves are not included.</p>
+<form class="calc" id="cost-form" onsubmit="return false">
+  <label>Your Omni volume (USD)<input type="number" min="0" step="any" data-d="vol" value="${st.vol || ""}" placeholder="e.g. 250000"></label>
+  <label>Cost per fill (bps)<input type="number" min="0" step="any" data-d="cbps" value="${st.cbps || ""}" placeholder="${typical !== null ? bps(typical) : "e.g. 3"}"></label>
+</form>
+${st.vol > 0 && Number.isFinite(cpp) ? `<section class="kpis drop-kpis">
+  <div><span>Spread paid</span><b>${money((st.vol * cbps) / 1e4)}</b></div>
+  <div><span>Cost per point</span><b>${perPtText(cpp)}</b></div>
+  <div><span>Break-even FDV</span><b>${Number.isFinite(be) ? fdvText(be) : DASH}</b></div>
+</section><p class="note">At ${fdvText(st.fdv)} a point is worth ${perPtText(per)}, ${per >= cpp ? `<b class="pos">${timesText(per / cpp)}×</b> what it cost` : `<b class="neg">less than</b> it cost`}.</p>` : `<p class="muted">Enter your volume to see it.</p>`}
+</section>`;
+
+  const share = `<section class="drop-share"><button type="button" class="go" id="drop-copy">Copy link to my scenario</button><a class="go" id="drop-x" target="_blank" rel="noopener">Share on X</a><span class="muted" id="drop-copied"></span></section>`;
+
+  const notes = `<section class="chart"><div class="chart-head"><h3>Assumptions</h3></div><ul class="note drop-notes">
+<li><b>Airdrop share 32%:</b> the genesis distribution in Variational's docs, proportional to points and fully unlocked at TGE. Total supply is not public, so the math uses FDV directly.</li>
+<li><b>Total points ${ptsText(DEFAULT_TOTAL_POINTS)}:</b> 3M retroactive points from launch, then weekly drops. Variational does not publish the weekly amount; community trackers count about 10.2M by mid-November and roughly 150K a week, which gives ~11.2M by the end of 2026 when distributions stop. Change it if you have a better number.</li>
+<li><b>Benchmarks:</b> daily closes from Hyperliquid's HYPE/USDC and Lighter's LIT/USDC spot markets. CoinGecko lists intraday extremes outside these (HYPE $3.81 low on launch day, LIT $7.86 in its first minutes), which were thin.</li>
+<li>Referral points, boosts and any sybil filtering change the real numbers. This page keeps nothing: your inputs live only in the link.</li>
+</ul></section>`;
+  return cards + scen + bench + cost + share + notes;
+}
+
+function bindDrop() {
+  const out = document.getElementById("drop-out");
+  const slider = document.getElementById("drop-slider") as HTMLInputElement | null;
+  if (!out || !slider) return;
+  let st = readDrop(location.hash.split("?")[1] ?? "");
+  const shareUrl = () => `${location.origin}/#/var?${writeDrop(st)}`;
+  const paint = () => {
+    history.replaceState(null, "", `#/var?${writeDrop(st)}`);
+    document.getElementById("drop-fdv-val")!.textContent = fdvText(st.fdv);
+    document.querySelectorAll<HTMLButtonElement>("[data-fdv]").forEach((b) => b.classList.toggle("on", Number(b.dataset.fdv) === st.fdv));
+    out.innerHTML = dropOut(st);
+    const per = perPoint(st.fdv, st.total, st.share);
+    const text = `${ptsText(st.points)} Variational points at a ${fdvText(st.fdv)} VAR FDV ≈ ${money(per * st.points)} (${perPtText(per)}/pt, ${(st.share * 100).toFixed(0)}% airdrop, ${(st.total / 1e6).toFixed(1)}M total points). My scenario on Omni Tape:`;
+    (document.getElementById("drop-x") as HTMLAnchorElement).href = `https://x.com/intent/post?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrl())}`;
+  };
+  const read = (ev: Event) => {
+    const el = ev.target as HTMLInputElement;
+    const k = el.dataset.d;
+    if (!k) return;
+    const v = Number(el.value);
+    const ok = el.value.trim() !== "" && Number.isFinite(v) && v >= 0;
+    if (k === "pts" && ok && v > 0) st.points = v;
+    else if (k === "total" && ok && v > 0) st.total = v;
+    else if (k === "share" && ok && v > 0 && v <= 100) st.share = v / 100;
+    else if (k === "target") st.target = ok ? v : 0;
+    else if (k === "vol") st.vol = ok ? v : 0;
+    else if (k === "cbps") st.cbps = ok ? v : 0;
+    else return;
+    // The cost inputs live inside the output, so keep focus there by updating in place.
+    if (k === "vol" || k === "cbps") {
+      const pos = el.selectionStart;
+      paint();
+      const again = out.querySelector<HTMLInputElement>(`[data-d="${k}"]`);
+      again?.focus();
+      try {
+        if (pos !== null) again?.setSelectionRange(pos, pos);
+      } catch {
+        /* number inputs do not support selection */
+      }
+    } else paint();
+  };
+  document.getElementById("drop-form")!.addEventListener("input", read);
+  out.addEventListener("input", read);
+  slider.addEventListener("input", () => {
+    st.fdv = fdvFromSlider(Number(slider.value));
+    paint();
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-fdv]").forEach((b) =>
+    b.addEventListener("click", () => {
+      st.fdv = Number(b.dataset.fdv);
+      slider.value = String(sliderFromFdv(st.fdv));
+      paint();
+    }),
+  );
+  out.addEventListener("click", (ev) => {
+    const t = ev.target as HTMLElement;
+    const r = t.closest<HTMLElement>("tr.pick[data-bfdv]");
+    if (r) {
+      st.fdv = Number(r.dataset.bfdv);
+      slider.value = String(sliderFromFdv(st.fdv));
+      paint();
+      document.querySelector(".drop-fdv")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    if (t.id === "drop-copy") {
+      navigator.clipboard?.writeText(shareUrl()).then(
+        () => (document.getElementById("drop-copied")!.textContent = "Link copied"),
+        () => (document.getElementById("drop-copied")!.textContent = shareUrl()),
+      );
+    }
+  });
+  st = { ...st };
+  paint();
+}
+
 async function route() {
   const h = location.hash.replace(/^#\/?/, "");
   if (h.startsWith("m/")) return viewMarket(decodeURIComponent(h.slice(2)));
   if (h === "week" || h.startsWith("week/")) {
     window.scrollTo(0, 0);
     return viewWeek(h === "week" ? "latest" : decodeURIComponent(h.slice(5)));
+  }
+  if (h === "var" || h.startsWith("var?")) {
+    app.innerHTML = shell("var", viewDrop());
+    bindShell();
+    bindDrop();
+    window.scrollTo(0, 0);
+    return;
   }
   if (h === "calc" || h.startsWith("calc?")) {
     app.innerHTML = shell("calc", viewCalc());

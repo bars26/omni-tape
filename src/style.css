@@ -207,3 +207,21 @@ form.calc .go { font: inherit; font-weight: 600; color: #fff; background: var(--
   .pcharts, .two { grid-template-columns: 1fr; }
 }
 .kpis.four { grid-template-columns: repeat(4, 1fr); } @media (max-width: 760px) { .kpis.four { grid-template-columns: repeat(2, 1fr); } .kpis.four > div:last-child { grid-column: auto; } }
+
+/* VAR points page */
+.drop-fdv { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+.drop-fdv-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.drop-fdv-head span { color: var(--muted); font-size: 12px; }
+.drop-fdv-head b { font-size: 22px; }
+.drop-fdv input[type="range"] { width: 100%; accent-color: var(--omni); }
+.drop-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.drop-chips button { font: inherit; font-size: 12px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+.drop-chips button.on { color: var(--ink); border-color: var(--omni); }
+.drop-kpis { grid-template-columns: repeat(3, 1fr); }
+.calc-table tr.pick { cursor: pointer; }
+.calc-table tr.pick:hover td { background: color-mix(in srgb, var(--omni) 5%, transparent); }
+.drop-share { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0; }
+.drop-share .go { font: inherit; font-weight: 600; color: #fff; background: var(--omni); border: 0; border-radius: 6px; padding: 9px 14px; cursor: pointer; text-decoration: none; }
+.drop-notes { padding-left: 18px; }
+.drop-notes li { margin: 4px 0; }
+@media (max-width: 640px) { .drop-kpis { grid-template-columns: 1fr; } }
