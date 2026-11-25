@@ -1008,6 +1008,9 @@ function bindList(st: ListState, rerender: () => void) {
 
 // ---------- VAR points -> airdrop ----------
 
+/** Variational on X, 24 Sep 2026: VAR tokenomics, 150K points a week, 1-point minimum. */
+const VAR_ANNOUNCEMENT = "https://x.com/variational_io/status/2102929439063765192";
+
 const perPtText = (x: number) =>
   !Number.isFinite(x) ? DASH : x === 0 ? "$0" : x >= 1000 ? `$${Math.round(x).toLocaleString("en-US")}` : x >= 10 ? `$${x.toFixed(1)}` : x >= 1 ? `$${x.toFixed(2)}` : `$${x.toPrecision(2)}`;
 const timesText = (x: number) => (x >= 100 ? Math.round(x).toLocaleString("en-US") : x.toFixed(1));
@@ -1048,7 +1051,7 @@ function viewDrop(): string {
 </section>
 <div id="drop-out"></div>
 <section class="chart"><div class="chart-head"><h3>What did your points cost?</h3></div>
-<p class="note">Omni charges no fees; you pay the spread. This is an estimate: it applies a one-way cost per fill to the volume you enter, and that volume counts every fill, opens and closes alike. Leave the cost blank to use the volume-weighted Omni cost for a $1K order across markets with $1M+ daily volume; larger orders cost more (see Trade cost). Funding and price moves are not included.</p>
+<p class="note">Omni charges <a href="https://docs.variational.io/omni/trading/fees" target="_blank" rel="noopener">no trading fees</a>; you pay the spread, which goes to the OLP market maker, with 20% of it to the protocol treasury. A referrer receives 5% of the spread their referrals pay, in USDC; that does not lower the referred trader's own cost. This is an estimate: it applies a one-way cost per fill to the volume you enter, and that volume counts every fill, opens and closes alike. Leave the cost blank to use the volume-weighted Omni cost for a $1K order across markets with $1M+ daily volume; larger orders cost more (see Trade cost). Funding and price moves are not included.</p>
 <form class="calc" id="cost-form" onsubmit="return false">
   <label>Your Omni volume (USD)${num("vol", st.vol || null, 'placeholder="e.g. 250000"')}<small class="muted">Opened $10K and closed $10K? Enter $20K total volume.</small>${err("vol")}</label>
   <label>Cost per fill (bps)${num("cbps", st.cbps, 'placeholder="auto"')}<small class="muted" id="cbps-hint"></small>${err("cbps")}</label>
@@ -1057,12 +1060,13 @@ function viewDrop(): string {
 </section>
 <section class="drop-share"><button type="button" class="go" id="drop-copy">Copy link to my scenario</button><a class="go" id="drop-x" target="_blank" rel="noopener">Share on X</a><span class="muted" id="drop-copied" aria-live="polite"></span></section>
 <section class="chart"><div class="chart-head"><h3>Assumptions</h3></div><ul class="note drop-notes">
-<li><b>Airdrop share 32%:</b> the genesis distribution in Variational's docs, proportional to points and fully unlocked at TGE. Total supply is not public, so the math uses FDV directly.</li>
-<li><b>Weekly points (official):</b> Variational's 24 September 2026 update says 150,000 points are distributed each week until TGE, which is set for Q4 2026.</li>
-<li><b>Estimated total ${pointsLabel(DEFAULT_TOTAL_POINTS)} (our estimate, not official):</b> starts from "at least 10.2 million points" after the 13 November 2026 distribution, as counted by <a href="https://beincrypto.com/variational-airdrop-point-worth-after-raise/" target="_blank" rel="noopener">BeInCrypto (19 Nov 2026)</a> from the 3M retroactive points plus 150K each Friday. Adding the official 150K for the six Fridays left in 2026 (20 Nov – 25 Dec) gives ~11.1M. An earlier TGE means fewer points and more per point. Change it if you have a better number.</li>
-<li><b>Minimum balance:</b> Variational's update says you need at least ${MIN_POINTS} point to claim the genesis airdrop; below that the page shows no personal estimate.</li>
+<li><b>Airdrop share 32% (official):</b> the genesis distribution in <a href="${VAR_ANNOUNCEMENT}" target="_blank" rel="noopener">Variational's 24 September 2026 VAR announcement</a>, proportional to points and fully unlocked at TGE. Total supply is not public, so the math uses FDV directly.</li>
+<li><b>Weekly points (official):</b> the same announcement says 150,000 points are distributed each week until TGE, which is set for Q4 2026. The <a href="https://docs.variational.io/omni/rewards/points" target="_blank" rel="noopener">points docs</a> add that drops land every Friday at 00:00 UTC and end no later than the end of Q4 2026.</li>
+<li><b>Estimated total ${pointsLabel(DEFAULT_TOTAL_POINTS)} (our estimate, not official):</b> starts from "at least 10.2 million points" after the 13 November 2026 distribution, as counted by <a href="https://beincrypto.com/variational-airdrop-point-worth-after-raise/" target="_blank" rel="noopener">BeInCrypto (19 Nov 2026)</a> from the 3M retroactive points plus 150K each Friday. Adding the official 150K for the six Fridays left in 2026 (20 Nov – 25 Dec) gives ~11.1M. An earlier TGE means fewer points and more per point. The separate <a href="https://docs.variational.io/omni/trader-rewards" target="_blank" rel="noopener">trader rewards campaign</a> (from 12 August 2026, capped at 150,000 campaign points) is not counted here; if its points come on top of the weekly drops, the real total is higher. Change it if you have a better number.</li>
+<li><b>Minimum balance (official):</b> the announcement says an account needs at least ${MIN_POINTS} point to sign the VAR terms and claim the genesis airdrop; below that the page shows no personal estimate.</li>
+<li><b>Boosts and referrals (official, <a href="https://docs.variational.io/omni/rewards/points" target="_blank" rel="noopener">points docs</a>):</b> pre-launch traders earn 10% more points, reward tiers add 0–5%, and a referrer earns 1 point for every 10 points their referrals earn. Enter your balance as shown in the app; these are already in it.</li>
 <li><b>Benchmarks:</b> daily UTC closes, scanned from each token's launch through ${BENCH_SCANNED_THROUGH}, from <a href="https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint" target="_blank" rel="noopener">Hyperliquid's candle API</a> (HYPE/USDC spot) and <a href="https://apidocs.lighter.xyz/" target="_blank" rel="noopener">Lighter's candle API</a> (LIT/USDC spot). CoinGecko lists intraday extremes outside these (HYPE $3.81 low on launch day, LIT $7.86 in its first minutes), which were thin.</li>
-<li>Referral points, boosts and any sybil filtering change the real numbers. This page keeps nothing: your inputs live only in the link.</li>
+<li>Any sybil filtering or later rule changes (Variational reserves the right to modify points) change the real numbers. This page keeps nothing: your inputs live only in the link.</li>
 </ul></section>`;
 }
 
