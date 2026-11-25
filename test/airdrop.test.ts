@@ -1,84 +1,221 @@
 import { describe, expect, it } from "vitest";
-import { BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, dropErrors, FDV_LINK_MAX, MIN_POINTS, pinSpread, pointsLabel, shareLabel, FDV_MAX, FDV_MIN, fdvFromSlider, perPoint, pointsFor, readDrop, roundFdv, sliderFromFdv, writeDrop } from "../src/lib/airdrop.ts";
+import {
+  BENCHMARKS,
+  breakEvenFdv,
+  ceil4,
+  coreError,
+  costPerPoint,
+  DEFAULT_FDV,
+  DEFAULT_POINTS,
+  DEFAULT_SHARE,
+  DEFAULT_TOTAL_POINTS,
+  dropErrors,
+  effectiveBps,
+  FDV_MAX,
+  FDV_MIN,
+  fdvFromSlider,
+  fdvLabel,
+  MIN_POINTS,
+  parseNum,
+  perPoint,
+  pinAuto,
+  pointsLabel,
+  readDrop,
+  roundFdv,
+  sharePctLabel,
+  shareLabel,
+  sliderFromFdv,
+  targetNeed,
+  totalLabel,
+  writeDrop,
+  type DropState,
+} from "../src/lib/airdrop.ts";
 
-describe("airdrop", () => {
+const base = (over: Partial<DropState> = {}): DropState => ({ ...readDrop(""), ...over });
+/** What a reader sees after opening a link in a new tab. */
+const reopen = (st: DropState) => readDrop(writeDrop(st));
+
+describe("airdrop arithmetic", () => {
   it("values a point as share of FDV over total points", () => {
     expect(perPoint(1e9, 10e6, 0.32)).toBeCloseTo(32);
     expect(perPoint(1e9, 0)).toBeNaN();
-    expect(pointsFor(3200, 1e9, 10e6, 0.32)).toBeCloseTo(100);
-    expect(pointsFor(0, 1e9, 10e6)).toBeNaN();
   });
-  it("prices points from spread paid and finds break-even FDV", () => {
-    const cpp = costPerPoint(1_000_000, 3, 100); // $300 spread / 100 points
+  it("prices points from spread and finds break-even FDV; 0 bps is free, not missing", () => {
+    const cpp = costPerPoint(1_000_000, 3, 100);
     expect(cpp).toBeCloseTo(3);
     expect(breakEvenFdv(cpp, 10e6, 0.32)).toBeCloseTo(93.75e6);
-    expect(perPoint(breakEvenFdv(cpp, 10e6, 0.32), 10e6, 0.32)).toBeCloseTo(cpp);
+    expect(costPerPoint(1e5, 0, 10)).toBe(0);
+    expect(breakEvenFdv(0, 10e6, 0.32)).toBe(0);
     expect(costPerPoint(0, 3, 100)).toBeNaN();
   });
   it("maps the slider on a log scale with round values", () => {
     expect(fdvFromSlider(0)).toBe(FDV_MIN);
     expect(fdvFromSlider(1000)).toBe(FDV_MAX);
     expect(fdvFromSlider(500)).toBe(1e9);
-    expect(sliderFromFdv(1e9)).toBe(500);
-    expect(sliderFromFdv(97e9)).toBe(1000);
+    expect(sliderFromFdv(97.2e9)).toBe(1000);
     expect(roundFdv(1234e6)).toBe(1.2e9);
   });
-  it("round-trips state through the link and rejects junk", () => {
-    const st = { points: 2500, total: 12e6, share: 0.3, fdv: 2e9, target: 5000, vol: 1e5, cbps: 2.5 };
-    expect(readDrop(writeDrop(st))).toEqual(st);
-    const d = readDrop("pts=-4&fdv=1e15&share=200&total=abc");
-    expect(d).toMatchObject({ points: 1000, fdv: FDV_LINK_MAX, share: 0.32, total: DEFAULT_TOTAL_POINTS, target: 0, vol: 0 });
+});
+
+describe("3. points needed for a target", () => {
+  it("is exact to 4 decimals instead of a whole number", () => {
+    // 11.1M total, 32%, $1B: one point is $28.83, so $40 needs 1.3875 points.
+    expect(targetNeed(40, 1e9, 11.1e6, 0.32)).toEqual({ reachable: true, points: 1.3875 });
+    expect(ceil4(1.38750000001)).toBe(1.3875);
+    expect(ceil4(1.38751)).toBe(1.3876);
   });
-  it("always pins total and share in the link, even at the defaults", () => {
-    expect(writeDrop(readDrop(""))).toBe(`pts=1000&fdv=1000000000&total=${DEFAULT_TOTAL_POINTS}&share=32`);
+  it("applies the 1-point claim minimum", () => {
+    expect(targetNeed(1, 1e9, 11.1e6, 0.32)).toEqual({ reachable: true, points: MIN_POINTS });
   });
-  it("keeps an FDV above the slider when it comes from a benchmark row", () => {
-    const peak = BENCHMARKS.find((b) => b.fdv > FDV_MAX)!;
-    expect(readDrop(writeDrop({ ...readDrop(""), fdv: peak.fdv })).fdv).toBe(peak.fdv);
-    expect(sliderFromFdv(peak.fdv)).toBe(1000);
+  it("says a target above the whole pool is not reachable", () => {
+    // 100 points in total, $1B x 32% = $320M pool.
+    expect(targetNeed(400e6, 1e9, 100, 0.32)).toEqual({ reachable: false, pool: 320e6 });
+    expect(targetNeed(160e6, 1e9, 100, 0.32)).toEqual({ reachable: true, points: 50 });
   });
-  it("keeps benchmarks consistent", () => {
-    for (const b of BENCHMARKS) expect(b.fdv).toBeCloseTo(b.price * 1e9);
-    expect(BENCHMARKS.filter((b) => b.token === "HYPE")).toHaveLength(3);
-    expect(BENCHMARKS.slice(0, 2).map((b) => b.label)).toEqual(["Launch day close", "Launch day close"]);
+  it("never asks for more points than exist", () => {
+    expect(targetNeed(320e6, 1e9, 100, 0.32)).toEqual({ reachable: true, points: 100 });
   });
-  it("writes point balances as typed, decimals included", () => {
+});
+
+describe("6. labels match the numbers used", () => {
+  it("keeps point decimals near the claim minimum", () => {
+    expect(pointsLabel(0.99999)).toBe("0.99999");
     expect(pointsLabel(1.5)).toBe("1.5");
     expect(pointsLabel(0.5)).toBe("0.5");
-    expect(pointsLabel(1)).toBe("1");
     expect(pointsLabel(1234.25)).toBe("1,234.25");
-    expect(pointsLabel(2500)).toBe("2,500");
-    expect(readDrop(writeDrop({ ...readDrop(""), points: 1.5 })).points).toBe(1.5);
   });
-  it("knows the 1-point claim minimum", () => {
-    expect(MIN_POINTS).toBe(1);
-    expect(0.5 >= MIN_POINTS).toBe(false);
-    expect(1.5 >= MIN_POINTS).toBe(true);
-    expect(dropErrors({ points: 0.5, total: 11e6, share: 0.32 })).toEqual({}); // valid input, just not eligible
+  it("writes the airdrop share as typed", () => {
+    expect(sharePctLabel(0.325)).toBe("32.5%");
+    expect(sharePctLabel(0.00004)).toBe("0.004%");
+    expect(sharePctLabel(0.32)).toBe("32%");
+  });
+  it("does not turn a small total into 0.0M", () => {
+    expect(totalLabel(100)).toBe("100");
+    expect(totalLabel(11.1e6)).toBe("11.1M");
+    expect(totalLabel(11_123_456)).toBe("11.1235M");
   });
   it("formats the share of the drop without scientific notation", () => {
     expect(shareLabel(800, 11.1e6)).toBe("0.0072%");
-    expect(shareLabel(222e3, 11.1e6)).toBe("2%");
     expect(shareLabel(11.1e6, 11.1e6)).toBe("100%");
-    expect(shareLabel(0, 11.1e6)).toBe("0%");
   });
-  it("flags inputs that would make a misleading estimate", () => {
-    expect(dropErrors({ points: 800, total: 11.1e6, share: 0.32 })).toEqual({});
-    expect(dropErrors({ points: 22.2e6, total: 11.1e6, share: 0.32 }).pts).toBe("Your points cannot exceed total points");
-    expect(dropErrors({ points: 800, total: 11.1e6, share: 2 }).share).toMatch(/between 0 and 100/);
-    expect(dropErrors({ points: NaN, total: 11.1e6, share: 0.32 }).pts).toBeTruthy();
-    expect(dropErrors({ points: 800, total: NaN, share: 0.32 }).total).toBeTruthy();
+  it("writes break-even FDVs under $1K in dollars", () => {
+    expect(fdvLabel(250)).toBe("$250");
+    expect(fdvLabel(0)).toBe("$0");
+    expect(fdvLabel(1500)).toBe("$1.5K");
+    expect(fdvLabel(129e6)).toBe("$129M");
+    expect(fdvLabel(97.2e9)).toBe("$97.2B");
   });
-  it("derives the default total from 10.2M plus six Fridays", () => {
+});
+
+describe("1. share survives the link", () => {
+  for (const pct of [0.004, 32.5]) {
+    it(`keeps ${pct}% and the dollar estimate`, () => {
+      const st = base({ share: pct / 100, points: 800 });
+      const back = reopen(st);
+      expect(back.share).toBeCloseTo(st.share, 15);
+      expect(sharePctLabel(back.share)).toBe(`${pct}%`);
+      expect(perPoint(back.fdv, back.total, back.share) * back.points).toBeCloseTo(perPoint(st.fdv, st.total, st.share) * st.points, 9);
+    });
+  }
+});
+
+describe("2. one validation rule for the form and the link", () => {
+  const cases: [string, number | null, boolean][] = [
+    ["", null, true], // blank: automatic cost
+    ["0", 0, true], // explicit zero: free
+    ["-2", -2, false],
+    ["1000", 1000, true],
+    ["1001", 1001, false],
+  ];
+  for (const [raw, typed, valid] of cases) {
+    it(`cost per fill "${raw}"`, () => {
+      const fromForm = base({ vol: 1e5, cbps: parseNum(raw) });
+      expect(fromForm.cbps).toBe(typed);
+      const fromLink = readDrop(`pts=800&vol=100000${raw === "" ? "" : `&cbps=${raw}`}`);
+      expect(fromLink.cbps).toBe(typed);
+      expect(Boolean(dropErrors(fromForm).cbps)).toBe(!valid);
+      expect(Boolean(dropErrors(fromLink).cbps)).toBe(!valid);
+    });
+  }
+  it("flags negative target and volume instead of ignoring them", () => {
+    expect(dropErrors(base({ target: -5 })).target).toBe("Target cannot be negative");
+    expect(dropErrors(base({ vol: -5 })).vol).toBe("Volume cannot be negative");
+    expect(dropErrors(readDrop("target=-5&vol=-1"))).toMatchObject({ target: expect.any(String), vol: expect.any(String) });
+    expect(coreError(dropErrors(base({ target: -5 })))).toBe(false); // only its own section stops
+  });
+  it("blocks points above the total and shares outside 0-100%", () => {
+    expect(dropErrors(base({ points: 22.2e6 })).pts).toBe("Your points cannot exceed total points");
+    expect(dropErrors(base({ share: 2 })).share).toMatch(/at most 100%/);
+    expect(dropErrors(base({ share: 0 })).share).toBeTruthy();
+  });
+});
+
+describe("4. missing spread is not a free spread", () => {
+  it("uses typed, then pinned, then live, and reports none when there is none", () => {
+    expect(effectiveBps(base({ cbps: null, abps: null }), null)).toBeNull();
+    expect(effectiveBps(base({ cbps: 0 }), 0.7)).toBe(0);
+    expect(effectiveBps(base({ cbps: null, abps: 0.9 }), 0.7)).toBe(0.9);
+    expect(effectiveBps(base({ cbps: null, abps: null }), 0.7)).toBe(0.7);
+  });
+});
+
+describe("5. links: defaults only for missing parameters", () => {
+  it("keeps a wrong point balance so the page can explain it", () => {
+    for (const q of ["pts=0", "pts=-4", "pts=abc"]) {
+      const st = readDrop(q);
+      expect(st.points === DEFAULT_POINTS).toBe(false);
+      expect(dropErrors(st).pts).toBeTruthy();
+    }
+  });
+  it("uses the example only when nothing is given", () => {
+    expect(readDrop("")).toMatchObject({ points: DEFAULT_POINTS, total: DEFAULT_TOTAL_POINTS, share: DEFAULT_SHARE, fdv: DEFAULT_FDV, cbps: null, abps: null });
+    expect(dropErrors(readDrop(""))).toEqual({});
+  });
+  it("pins the live automatic cost once, so every link carries the same scenario", () => {
+    const st = pinAuto(base({ vol: 1e5 }), 0.7429616017405822);
+    expect(st.abps).toBe(0.7429616017405822);
+    expect(writeDrop(st)).toContain("abps=0.7429616017405822");
+    expect(effectiveBps(reopen(st), 5)).toBe(0.7429616017405822); // a later live value does not change it
+    expect(pinAuto(base({ vol: 1e5, cbps: 3 }), 0.7).abps).toBeNull(); // the user's own value wins
+    expect(pinAuto(base({ vol: 0 }), 0.7).abps).toBeNull();
+  });
+});
+
+describe("acceptance: every valid scenario reopens the same", () => {
+  const scenarios: Partial<DropState>[] = [
+    {},
+    { points: 0.5, fdv: 97.2e9 },
+    { points: 0.99999 },
+    { points: 1.5, fdv: 2.58e9, target: 40 },
+    { points: 800, share: 0.00004 },
+    { points: 80, share: 0.325, total: 100 },
+    { points: 50, total: 100, target: 400e6 },
+    { points: 2, vol: 1e5, cbps: 0 },
+    { points: 2, vol: 1e5, cbps: 1000 },
+    { points: 2, vol: 1e5, abps: 0.7429616017405822 },
+  ];
+  for (const over of scenarios) {
+    it(JSON.stringify(over), () => {
+      const st = base(over);
+      expect(dropErrors(st)).toEqual({});
+      const back = reopen(st);
+      expect(back.points).toBe(st.points);
+      expect(back.share).toBeCloseTo(st.share, 15);
+      expect(back.fdv).toBe(st.fdv);
+      expect(back.total).toBe(st.total);
+      expect(back.points >= MIN_POINTS).toBe(st.points >= MIN_POINTS);
+      expect(perPoint(back.fdv, back.total, back.share) * back.points).toBeCloseTo(perPoint(st.fdv, st.total, st.share) * st.points, 9);
+      expect(targetNeed(back.target, back.fdv, back.total, back.share)).toEqual(targetNeed(st.target, st.fdv, st.total, st.share));
+      expect(effectiveBps(back, 99)).toBe(effectiveBps(st, 99));
+      expect(writeDrop(back)).toBe(writeDrop(st));
+    });
+  }
+});
+
+describe("benchmarks", () => {
+  it("are consistent and put launch days first", () => {
+    for (const b of BENCHMARKS) expect(b.fdv).toBeCloseTo(b.price * 1e9);
+    expect(BENCHMARKS.slice(0, 2).map((b) => b.label)).toEqual(["Launch day close", "Launch day close"]);
     expect(DEFAULT_TOTAL_POINTS).toBe(10.2e6 + 6 * 150_000);
-  });
-  it("pins the spread a shared result used, at full precision", () => {
-    const st = { ...readDrop(""), vol: 100_000 };
-    const pinned = pinSpread(st, 0.78345612);
-    expect(pinned.cbps).toBe(0.78345612);
-    expect(readDrop(writeDrop(pinned)).cbps).toBe(0.78345612);
-    expect(pinSpread({ ...st, cbps: 3 }, 0.78).cbps).toBe(3); // the user's own value wins
-    expect(pinSpread({ ...st, vol: 0 }, 0.78).cbps).toBe(0); // no volume, nothing to pin
-    expect(pinSpread(st, null).cbps).toBe(0);
   });
 });
