@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, FDV_MAX, FDV_MIN, fdvFromSlider, perPoint, pointsFor, readDrop, roundFdv, sliderFromFdv, writeDrop } from "../src/lib/airdrop.ts";
+import { BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, FDV_LINK_MAX, FDV_MAX, FDV_MIN, fdvFromSlider, perPoint, pointsFor, readDrop, roundFdv, sliderFromFdv, writeDrop } from "../src/lib/airdrop.ts";
 
 describe("airdrop", () => {
   it("values a point as share of FDV over total points", () => {
@@ -27,11 +27,19 @@ describe("airdrop", () => {
     const st = { points: 2500, total: 12e6, share: 0.3, fdv: 2e9, target: 5000, vol: 1e5, cbps: 2.5 };
     expect(readDrop(writeDrop(st))).toEqual(st);
     const d = readDrop("pts=-4&fdv=1e15&share=200&total=abc");
-    expect(d).toMatchObject({ points: 1000, fdv: FDV_MAX, share: 0.32, total: DEFAULT_TOTAL_POINTS, target: 0, vol: 0 });
-    expect(writeDrop(readDrop(""))).toBe("pts=1000&fdv=1000000000");
+    expect(d).toMatchObject({ points: 1000, fdv: FDV_LINK_MAX, share: 0.32, total: DEFAULT_TOTAL_POINTS, target: 0, vol: 0 });
+  });
+  it("always pins total and share in the link, even at the defaults", () => {
+    expect(writeDrop(readDrop(""))).toBe(`pts=1000&fdv=1000000000&total=${DEFAULT_TOTAL_POINTS}&share=32`);
+  });
+  it("keeps an FDV above the slider when it comes from a benchmark row", () => {
+    const peak = BENCHMARKS.find((b) => b.fdv > FDV_MAX)!;
+    expect(readDrop(writeDrop({ ...readDrop(""), fdv: peak.fdv })).fdv).toBe(peak.fdv);
+    expect(sliderFromFdv(peak.fdv)).toBe(1000);
   });
   it("keeps benchmarks consistent", () => {
     for (const b of BENCHMARKS) expect(b.fdv).toBeCloseTo(b.price * 1e9);
     expect(BENCHMARKS.filter((b) => b.token === "HYPE")).toHaveLength(3);
+    expect(BENCHMARKS.slice(0, 2).map((b) => b.label)).toEqual(["Launch day close", "Launch day close"]);
   });
 });

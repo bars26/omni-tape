@@ -1026,11 +1026,11 @@ function viewDrop(): string {
 <form class="calc" id="drop-form" onsubmit="return false">
   <label>Your points${num("pts", st.points)}</label>
   <label>Target (USD, optional)${num("target", st.target || "", 'placeholder="e.g. 5000"')}</label>
-  <label>Total points at TGE${num("total", st.total)}</label>
+  <label>Estimated total points at TGE${num("total", st.total)}</label>
   <label>Airdrop share (%)${num("share", +(st.share * 100).toFixed(2), 'max="100"')}</label>
 </form>
 <section class="drop-fdv">
-  <div class="drop-fdv-head"><span>FDV</span><b id="drop-fdv-val">${fdvText(st.fdv)}</b></div>
+  <div class="drop-fdv-head"><span>FDV <small class="muted" id="drop-fdv-hint"></small></span><b id="drop-fdv-val">${fdvText(st.fdv)}</b></div>
   <input type="range" id="drop-slider" min="0" max="1000" step="1" value="${sliderFromFdv(st.fdv)}" aria-label="FDV">
   <div class="drop-chips">${SCENARIOS.map((f) => `<button type="button" data-fdv="${f}">${fdvText(f)}</button>`).join("")}</div>
 </section>
@@ -1046,7 +1046,8 @@ function viewDrop(): string {
 <section class="drop-share"><button type="button" class="go" id="drop-copy">Copy link to my scenario</button><a class="go" id="drop-x" target="_blank" rel="noopener">Share on X</a><span class="muted" id="drop-copied"></span></section>
 <section class="chart"><div class="chart-head"><h3>Assumptions</h3></div><ul class="note drop-notes">
 <li><b>Airdrop share 32%:</b> the genesis distribution in Variational's docs, proportional to points and fully unlocked at TGE. Total supply is not public, so the math uses FDV directly.</li>
-<li><b>Total points ${ptsText(DEFAULT_TOTAL_POINTS)}:</b> 3M retroactive points from launch, then weekly drops. Variational does not publish the weekly amount; community trackers count about 10.2M by mid-November and roughly 150K a week, which gives ~11.2M by the end of 2026 when distributions stop. Change it if you have a better number.</li>
+<li><b>Weekly points (official):</b> Variational's 24 September 2026 update says 150,000 points are distributed each week until TGE, which is set for Q4 2026.</li>
+<li><b>Estimated total ${ptsText(DEFAULT_TOTAL_POINTS)} (our estimate, not official):</b> community trackers counted about 10.2M points by mid-November; adding the official 150K a week through the end of 2026 gives ~11.2M. An earlier TGE means fewer points and more per point. Change it if you have a better number.</li>
 <li><b>Benchmarks:</b> daily closes from Hyperliquid's HYPE/USDC and Lighter's LIT/USDC spot markets. CoinGecko lists intraday extremes outside these (HYPE $3.81 low on launch day, LIT $7.86 in its first minutes), which were thin.</li>
 <li>Referral points, boosts and any sybil filtering change the real numbers. This page keeps nothing: your inputs live only in the link.</li>
 </ul></section>`;
@@ -1072,10 +1073,10 @@ function dropOut(st: DropState): string {
 <tbody>${[...new Set([...SCENARIOS, st.fdv])].sort((a, b) => a - b).map((f) => row(f, "", f === st.fdv ? "best" : "")).join("")}</tbody></table></div></section>`;
 
   const bench = `<section class="chart"><div class="chart-head"><h3>If VAR traded where HYPE and LIT did</h3></div>
-<p class="note">VAR's FDV set equal to each token's FDV on that day (price × 1B max supply, daily close on the token's own spot market). The ${(st.share * 100).toFixed(0)}% VAR share is applied, not HYPE's ${BENCH_AIRDROP.HYPE * 100}% or LIT's ${BENCH_AIRDROP.LIT * 100}%. Click a row to use its FDV${BENCHMARKS.some((x) => x.fdv > FDV_MAX) ? "; the slider stops at $10B" : ""}.</p>
+<p class="note">VAR's FDV set equal to each token's FDV on that day (price × 1B max supply, daily close on the token's own spot market). The ${(st.share * 100).toFixed(0)}% VAR share is applied, not HYPE's ${BENCH_AIRDROP.HYPE * 100}% or LIT's ${BENCH_AIRDROP.LIT * 100}%. Launch days come first; lows are the lowest daily close after launch day. Click a row to use its FDV above; rows past $10B apply in full while the slider rests at its end.</p>
 <div class="table-wrap flat"><table class="calc-table">
 <thead><tr><th>Token</th><th>Moment</th><th>Date</th><th class="num">Price</th><th class="num">FDV</th><th class="num">Per point</th><th class="num">Your drop</th>${tgtTh}</tr></thead>
-<tbody>${BENCHMARKS.map((x) => row(x.fdv, `<td><b>${x.token}</b></td><td class="nm" ${x.note ? `title="${esc(x.note)}"` : ""}>${x.label}</td><td>${x.date}</td><td class="num">$${x.price}</td>`, `bench ${x.fdv <= FDV_MAX ? "pick" : ""}" data-bfdv="${x.fdv}`)).join("")}</tbody></table></div></section>`;
+<tbody>${BENCHMARKS.map((x) => row(x.fdv, `<td><b>${x.token}</b></td><td class="nm" ${x.note ? `title="${esc(x.note)}"` : ""}>${x.label}</td><td>${x.date}</td><td class="num">$${x.price}</td>`, `bench pick ${x.fdv === st.fdv ? "best" : ""}" data-bfdv="${x.fdv}`)).join("")}</tbody></table></div></section>`;
 
   return cards + scen + bench;
 }
@@ -1104,6 +1105,7 @@ function bindDrop() {
   const paint = () => {
     history.replaceState(null, "", `#/var?${writeDrop(st)}`);
     document.getElementById("drop-fdv-val")!.textContent = fdvText(st.fdv);
+    document.getElementById("drop-fdv-hint")!.textContent = st.fdv > FDV_MAX ? "from the table, above the slider's range" : "";
     document.querySelectorAll<HTMLButtonElement>("[data-fdv]").forEach((b) => b.classList.toggle("on", Number(b.dataset.fdv) === st.fdv));
     out.innerHTML = dropOut(st);
     document.getElementById("cost-out")!.innerHTML = costOut(st);

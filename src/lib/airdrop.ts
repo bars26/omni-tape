@@ -60,14 +60,19 @@ export interface Benchmark {
 export const SUPPLY = 1e9;
 const b = (token: Benchmark["token"], label: string, date: string, price: number, note?: string): Benchmark => ({ token, label, date, price, fdv: price * SUPPLY, note });
 
+// Launch days first: they answer "what if VAR opened where HYPE or LIT did".
+// Lows use the same rule for both tokens: lowest daily close after launch day.
 export const BENCHMARKS: Benchmark[] = [
   b("HYPE", "Launch day close", "2024-11-29", 6.25, "opened near $2 in the genesis auction, closed day one at $6.25"),
-  b("HYPE", "Lowest close after the first month", "2025-04-06", 10.25, "HYPE never closed below its launch day"),
-  b("HYPE", "Highest close", "2026-09-22", 97.2),
   b("LIT", "Launch day close", "2025-12-30", 2.58),
-  b("LIT", "Lowest close", "2026-03-30", 0.81),
+  b("HYPE", "Lowest close after launch day", "2024-12-02", 8.43, "HYPE never closed below its launch day"),
+  b("LIT", "Lowest close after launch day", "2026-03-30", 0.81),
+  b("HYPE", "Highest close", "2026-09-22", 97.2),
   b("LIT", "Highest close", "2026-09-23", 5.3),
 ];
+
+/** Upper bound for an FDV carried in a link: benchmark rows can exceed the slider. */
+export const FDV_LINK_MAX = 1e12;
 
 /** Share of supply each benchmark token airdropped at launch, for context. */
 export const BENCH_AIRDROP: Record<Benchmark["token"], number> = { HYPE: 0.31, LIT: 0.25 };
@@ -92,7 +97,7 @@ export function readDrop(query: string): DropState {
     points: pos("pts", 1000),
     total: pos("total", DEFAULT_TOTAL_POINTS),
     share: pos("share", DEFAULT_SHARE * 100, 100) / 100,
-    fdv: Math.min(FDV_MAX, Math.max(FDV_MIN, pos("fdv", 1e9))),
+    fdv: Math.min(FDV_LINK_MAX, Math.max(FDV_MIN, pos("fdv", 1e9))),
     target: pos("target", 0),
     vol: pos("vol", 0),
     cbps: pos("cbps", 0, 1000),
@@ -100,9 +105,9 @@ export function readDrop(query: string): DropState {
 }
 
 export function writeDrop(st: DropState): string {
-  const q = new URLSearchParams({ pts: String(st.points), fdv: String(st.fdv) });
-  if (st.total !== DEFAULT_TOTAL_POINTS) q.set("total", String(st.total));
-  if (Math.abs(st.share - DEFAULT_SHARE) > 1e-9) q.set("share", String(+(st.share * 100).toFixed(2)));
+  // Total and share are always written, so a shared link keeps its result even if
+  // the defaults change later.
+  const q = new URLSearchParams({ pts: String(st.points), fdv: String(st.fdv), total: String(st.total), share: String(+(st.share * 100).toFixed(2)) });
   if (st.target > 0) q.set("target", String(st.target));
   if (st.vol > 0) q.set("vol", String(st.vol));
   if (st.cbps > 0) q.set("cbps", String(st.cbps));
