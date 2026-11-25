@@ -6,7 +6,7 @@ import { bookCost, midOf, parseHlBook, parseLighterBook, TAKER_FEE, type Level }
 import { normalizeSymbol } from "./lib/venues.ts";
 import { isoWeek, WEEK, type Digest, type DigestRow } from "./lib/summary.ts";
 import { byHour, legEstimate, omniCostAt, pairEstimate, trailingMean, type Side } from "./lib/calc.ts";
-import { BENCH_AIRDROP, BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, dropErrors, FDV_MAX, MIN_POINTS, pointsLabel, shareLabel, fdvFromSlider, perPoint, pointsFor, readDrop, SCENARIOS, sliderFromFdv, writeDrop, type DropState } from "./lib/airdrop.ts";
+import { BENCH_AIRDROP, BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, dropErrors, FDV_MAX, MIN_POINTS, pinSpread, pointsLabel, shareLabel, fdvFromSlider, perPoint, pointsFor, readDrop, SCENARIOS, sliderFromFdv, writeDrop, type DropState } from "./lib/airdrop.ts";
 import { venueMedian } from "./lib/snapshot.ts";
 import { VENUE_LABEL, VENUES, type MarketRow, type Snapshot, type Venue } from "./lib/types.ts";
 
@@ -1049,7 +1049,7 @@ function viewDrop(): string {
 <section class="chart"><div class="chart-head"><h3>Assumptions</h3></div><ul class="note drop-notes">
 <li><b>Airdrop share 32%:</b> the genesis distribution in Variational's docs, proportional to points and fully unlocked at TGE. Total supply is not public, so the math uses FDV directly.</li>
 <li><b>Weekly points (official):</b> Variational's 24 September 2026 update says 150,000 points are distributed each week until TGE, which is set for Q4 2026.</li>
-<li><b>Estimated total ${ptsText(DEFAULT_TOTAL_POINTS)} (our estimate, not official):</b> starts from "at least 10.2 million points" after the 13 November 2026 distribution, as counted by <a href="https://www.kucoin.com/news/flash/variational-airdrop-point-valuation-estimated-at-47-after-1-5b-valuation-raise" target="_blank" rel="noopener">BeInCrypto (19 Nov 2026)</a> from the 3M retroactive points plus 150K each Friday. Adding the official 150K for the six Fridays left in 2026 (20 Nov – 25 Dec) gives ~11.1M. An earlier TGE means fewer points and more per point. Change it if you have a better number.</li>
+<li><b>Estimated total ${ptsText(DEFAULT_TOTAL_POINTS)} (our estimate, not official):</b> starts from "at least 10.2 million points" after the 13 November 2026 distribution, as counted by <a href="https://beincrypto.com/variational-airdrop-point-worth-after-raise/" target="_blank" rel="noopener">BeInCrypto (19 Nov 2026)</a> from the 3M retroactive points plus 150K each Friday. Adding the official 150K for the six Fridays left in 2026 (20 Nov – 25 Dec) gives ~11.1M. An earlier TGE means fewer points and more per point. Change it if you have a better number.</li>
 <li><b>Minimum balance:</b> Variational's update says you need at least ${MIN_POINTS} point to claim the genesis airdrop; below that the page shows no personal estimate.</li>
 <li><b>Benchmarks:</b> daily closes from Hyperliquid's HYPE/USDC and Lighter's LIT/USDC spot markets. CoinGecko lists intraday extremes outside these (HYPE $3.81 low on launch day, LIT $7.86 in its first minutes), which were thin.</li>
 <li>Referral points, boosts and any sybil filtering change the real numbers. This page keeps nothing: your inputs live only in the link.</li>
@@ -1069,7 +1069,7 @@ function dropOut(st: DropState): string {
   const cards = `<section class="kpis drop-kpis">
   <div><span>One point at ${fdvText(st.fdv)}</span><b>${perPtText(per)}</b></div>
   <div><span>Your ${pointsLabel(st.points)} ${st.points === 1 ? "point" : "points"}</span>${eligible ? `<b>${money(yours)}</b>` : `<b class="neg">Not eligible</b><small>Variational's minimum to claim is ${MIN_POINTS} point</small>`}</div>
-  <div><span>${tgt ? `Points for ${money(st.target)}` : "Your share of the drop"}</span><b>${tgt ? ptsText(Math.max(MIN_POINTS, pointsFor(st.target, st.fdv, st.total, st.share))) : shareLabel(st.points, st.total)}</b></div>
+  <div><span>${tgt ? `Points for ${money(st.target)}` : "Your share of the drop"}</span><b>${tgt ? ptsText(Math.max(MIN_POINTS, pointsFor(st.target, st.fdv, st.total, st.share))) : eligible ? shareLabel(st.points, st.total) : DASH}</b></div>
 </section>`;
 
   const row = (fdv: number, lead: string, cls = "") => {
@@ -1099,11 +1099,13 @@ function costOut(st: DropState): string {
   const be = breakEvenFdv(cpp, st.total, st.share);
   if (Object.keys(dropErrors(st)).length) return `<p class="muted">Fix the inputs above to see this.</p>`;
   if (!(st.vol > 0) || !Number.isFinite(cpp)) return `<p class="muted">Enter your volume to see it.</p>`;
+  // Below the claim minimum the points pay nothing back, so only the cost side is shown.
+  const eligible = st.points >= MIN_POINTS;
   return `<section class="kpis drop-kpis">
   <div><span>Spread paid</span><b>${money((st.vol * cbps) / 1e4)}</b></div>
   <div><span>Cost per point</span><b>${perPtText(cpp)}</b></div>
-  <div><span>Break-even FDV</span><b>${Number.isFinite(be) ? fdvText(be) : DASH}</b></div>
-</section><p class="note">At ${fdvText(st.fdv)} a point is worth ${perPtText(per)}, ${per >= cpp ? `<b class="pos">${timesText(per / cpp)}×</b> what it cost` : `<b class="neg">less than</b> it cost`}.</p>`;
+  <div><span>Break-even FDV</span>${eligible ? `<b>${Number.isFinite(be) ? fdvText(be) : DASH}</b>` : `<b>${DASH}</b><small>Needs at least ${MIN_POINTS} point to claim</small>`}</div>
+</section>${eligible ? `<p class="note">At ${fdvText(st.fdv)} a point is worth ${perPtText(per)}, ${per >= cpp ? `<b class="pos">${timesText(per / cpp)}×</b> what it cost` : `<b class="neg">less than</b> it cost`}.</p>` : `<p class="note">Below ${MIN_POINTS} point there is no claim, so no break-even FDV or payback multiple.</p>`}`;
 }
 
 function bindDrop() {
@@ -1111,7 +1113,8 @@ function bindDrop() {
   const slider = document.getElementById("drop-slider") as HTMLInputElement | null;
   if (!out || !slider) return;
   let st = readDrop(location.hash.split("?")[1] ?? "");
-  const shareUrl = () => `${location.origin}/#/var?${writeDrop(st)}`;
+  // Shared links carry the spread the result was computed with, since the default moves with market data.
+  const shareUrl = () => `${location.origin}/#/var?${writeDrop(pinSpread(st, typicalOmniBps()))}`;
   const paint = () => {
     const errs = dropErrors(st);
     const ok = !Object.keys(errs).length;

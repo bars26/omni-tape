@@ -20,6 +20,14 @@ export function shareLabel(points: number, total: number): string {
   return `${+p.toPrecision(2)}%`;
 }
 
+/**
+ * State for a shared link: when volume is given but the spread was left to the
+ * live default, write that default in full so the link keeps its result.
+ */
+export function pinSpread<T extends { vol: number; cbps: number }>(st: T, typical: number | null): T {
+  return st.vol > 0 && !(st.cbps > 0) && typical !== null && typical > 0 ? { ...st, cbps: typical } : st;
+}
+
 export type DropErrors = Partial<Record<"pts" | "total" | "share", string>>;
 
 /** Inputs that make a personal estimate meaningless; the page hides it until they are fixed. */

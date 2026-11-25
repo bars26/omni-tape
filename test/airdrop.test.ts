@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, dropErrors, FDV_LINK_MAX, MIN_POINTS, pointsLabel, shareLabel, FDV_MAX, FDV_MIN, fdvFromSlider, perPoint, pointsFor, readDrop, roundFdv, sliderFromFdv, writeDrop } from "../src/lib/airdrop.ts";
+import { BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, dropErrors, FDV_LINK_MAX, MIN_POINTS, pinSpread, pointsLabel, shareLabel, FDV_MAX, FDV_MIN, fdvFromSlider, perPoint, pointsFor, readDrop, roundFdv, sliderFromFdv, writeDrop } from "../src/lib/airdrop.ts";
 
 describe("airdrop", () => {
   it("values a point as share of FDV over total points", () => {
@@ -71,5 +71,14 @@ describe("airdrop", () => {
   });
   it("derives the default total from 10.2M plus six Fridays", () => {
     expect(DEFAULT_TOTAL_POINTS).toBe(10.2e6 + 6 * 150_000);
+  });
+  it("pins the spread a shared result used, at full precision", () => {
+    const st = { ...readDrop(""), vol: 100_000 };
+    const pinned = pinSpread(st, 0.78345612);
+    expect(pinned.cbps).toBe(0.78345612);
+    expect(readDrop(writeDrop(pinned)).cbps).toBe(0.78345612);
+    expect(pinSpread({ ...st, cbps: 3 }, 0.78).cbps).toBe(3); // the user's own value wins
+    expect(pinSpread({ ...st, vol: 0 }, 0.78).cbps).toBe(0); // no volume, nothing to pin
+    expect(pinSpread(st, null).cbps).toBe(0);
   });
 });
