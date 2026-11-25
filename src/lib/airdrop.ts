@@ -12,6 +12,7 @@ export const DEFAULT_SHARE = 0.32; // genesis distribution, per Variational's do
 export const DEFAULT_POINTS = 1000; // example balance when a link gives none
 export const DEFAULT_FDV = 1e9;
 export const MIN_POINTS = 1; // Variational's minimum balance to claim the genesis airdrop
+export const MAX_DECIMALS = 8; // points, totals and the share % are accepted to 8 decimal places
 export const MAX_BPS = 1000; // a one-way cost above 10% is a typo, not a spread
 export const FDV_MIN = 100e6;
 export const FDV_MAX = 10e9; // the slider's range
@@ -96,7 +97,7 @@ export function sharePctLabel(share: number): string {
   return Number.isFinite(share) ? `${pctNumber(share)}%` : "—";
 }
 function pctNumber(share: number): number {
-  return +(share * 100).toPrecision(12); // drops float noise such as 32.50000000004
+  return +(share * 100).toPrecision(15); // drops float noise such as 32.50000000004, keeps 8 decimals
 }
 
 /** Your points as a share of all points, readable at any size. */
@@ -149,16 +150,17 @@ export function parseNum(raw: string | null | undefined): number | null {
  */
 export function readDrop(query: string): DropState {
   const q = new URLSearchParams(query);
-  const val = (k: string, d: number) => parseNum(q.get(k)) ?? d;
-  const share = parseNum(q.get("share"));
+  // Missing -> the default. Present but blank (pts=) -> NaN, an error like a blank form field.
+  const val = (k: string, d: number) => (q.has(k) ? (parseNum(q.get(k)) ?? NaN) : d);
+  const shareRaw = q.has("share") ? (parseNum(q.get("share")) ?? NaN) : null;
   const abps = parseNum(q.get("abps"));
   return {
     points: val("pts", DEFAULT_POINTS),
     total: val("total", DEFAULT_TOTAL_POINTS),
-    share: share === null ? DEFAULT_SHARE : share / 100,
+    share: shareRaw === null ? DEFAULT_SHARE : shareRaw / 100,
     fdv: val("fdv", DEFAULT_FDV),
-    target: val("target", 0),
-    vol: val("vol", 0),
+    target: parseNum(q.get("target")) ?? 0, // optional fields: blank means none
+    vol: parseNum(q.get("vol")) ?? 0,
     cbps: parseNum(q.get("cbps")),
     abps: abps !== null && abps >= 0 && abps <= MAX_BPS ? abps : null,
   };
@@ -175,12 +177,25 @@ export function writeDrop(st: DropState): string {
 }
 
 /** Same rules for typed input and for links. */
+/** Decimal places of a number as JavaScript writes it, exponents included (1e-8 -> 8). */
+export function decimalsOf(x: number): number {
+  if (!Number.isFinite(x)) return 0;
+  const m = /^-?\d*(?:\.(\d+))?(?:e([+-]\d+))?$/i.exec(String(x));
+  return m ? Math.max(0, (m[1] ?? "").length - Number(m[2] ?? 0)) : 0;
+}
+const TOO_PRECISE = `Use at most ${MAX_DECIMALS} decimal places`;
+
 export function dropErrors(st: DropState): DropErrors {
   const e: DropErrors = {};
-  if (!(st.total > 0)) e.total = "Enter a total above 0";
+  // The total must leave room for an eligible balance, so it starts at the claim minimum.
+  if (!(st.total > 0)) e.total = "Enter the estimated total points";
+  else if (st.total < MIN_POINTS) e.total = `Total points must be at least ${MIN_POINTS}`;
+  else if (decimalsOf(st.total) > MAX_DECIMALS) e.total = TOO_PRECISE;
   if (!(st.points > 0)) e.pts = "Enter a point balance above 0";
-  else if (st.total > 0 && st.points > st.total) e.pts = "Your points cannot exceed total points";
+  else if (decimalsOf(st.points) > MAX_DECIMALS) e.pts = TOO_PRECISE;
+  else if (!e.total && st.points > st.total) e.pts = "Your points cannot exceed total points";
   if (!(st.share > 0) || st.share > 1) e.share = "Airdrop share must be above 0 and at most 100%";
+  else if (decimalsOf(pctNumber(st.share)) > MAX_DECIMALS) e.share = TOO_PRECISE;
   if (!(st.fdv >= FDV_MIN) || st.fdv > FDV_LINK_MAX) e.fdv = `FDV must be between ${fdvLabel(FDV_MIN)} and ${fdvLabel(FDV_LINK_MAX)}`;
   if (!(st.target >= 0)) e.target = "Target cannot be negative";
   if (!(st.vol >= 0)) e.vol = "Volume cannot be negative";

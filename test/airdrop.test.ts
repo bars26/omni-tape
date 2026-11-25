@@ -9,6 +9,7 @@ import {
   DEFAULT_POINTS,
   DEFAULT_SHARE,
   DEFAULT_TOTAL_POINTS,
+  decimalsOf,
   dropErrors,
   effectiveBps,
   FDV_MAX,
@@ -217,5 +218,37 @@ describe("benchmarks", () => {
     for (const b of BENCHMARKS) expect(b.fdv).toBeCloseTo(b.price * 1e9);
     expect(BENCHMARKS.slice(0, 2).map((b) => b.label)).toEqual(["Launch day close", "Launch day close"]);
     expect(DEFAULT_TOTAL_POINTS).toBe(10.2e6 + 6 * 150_000);
+  });
+});
+
+describe("follow-up: blank params, total minimum, precision", () => {
+  it("1. a blank parameter is an error, a missing one is the example", () => {
+    expect(dropErrors(readDrop(""))).toEqual({});
+    expect(dropErrors(readDrop("pts=")).pts).toBeTruthy();
+    expect(dropErrors(readDrop("total=")).total).toBeTruthy();
+    expect(dropErrors(readDrop("share=")).share).toBeTruthy();
+    expect(readDrop("pts=").points).toBeNaN();
+    expect(readDrop("target=&vol=")).toMatchObject({ target: 0, vol: 0 }); // optional fields stay optional
+  });
+  it("2. total points start at the 1-point claim minimum", () => {
+    const st = base({ points: 0.5, total: 0.5, target: 1 });
+    expect(dropErrors(st).total).toBe("Total points must be at least 1");
+    expect(coreError(dropErrors(st))).toBe(true); // target and estimate stop
+    const fixed = base({ points: 0.5, total: 11.1e6 });
+    expect(dropErrors(fixed)).toEqual({});
+    expect(fixed.points >= MIN_POINTS).toBe(false); // shown as Not eligible
+  });
+  it("3. points and share accept 8 decimals and refuse more", () => {
+    expect(decimalsOf(0.999999999)).toBe(9);
+    expect(decimalsOf(1e-8)).toBe(8);
+    expect(decimalsOf(32.12345678)).toBe(8);
+    expect(dropErrors(base({ points: 0.999999999 })).pts).toBe("Use at most 8 decimal places");
+    expect(dropErrors(base({ points: 0.99999999 }))).toEqual({});
+    expect(pointsLabel(0.99999999)).toBe("0.99999999"); // never shown as 1
+    expect(dropErrors(base({ share: 32.12345678901234 / 100 })).share).toBe("Use at most 8 decimal places");
+    const ok = base({ share: 32.12345678 / 100 });
+    expect(dropErrors(ok)).toEqual({});
+    expect(sharePctLabel(reopen(ok).share)).toBe("32.12345678%");
+    expect(perPoint(1e9, 11.1e6, reopen(ok).share)).toBeCloseTo(perPoint(1e9, 11.1e6, ok.share), 9);
   });
 });

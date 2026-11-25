@@ -60,6 +60,8 @@ const COLOR: Record<"omni" | Venue, string> = {
 const app = document.getElementById("app")!;
 let snap: Snapshot | null = null;
 let loadError: string | null = null; // why latest.json failed, if it did
+let dataLoading = true; // latest.json still on its way
+let dropRefresh: (() => void) | null = null; // repaints the VAR page when market data arrives
 let meta: { first: number; last: number; snapshots: number } | null = null;
 
 // ---------- state kept in the URL hash so views are linkable ----------
@@ -1036,7 +1038,7 @@ function viewDrop(): string {
   <label>Your points${num("pts", st.points)}${err("pts")}</label>
   <label>Target (USD, optional)${num("target", st.target || null, 'placeholder="e.g. 5000"')}${err("target")}</label>
   <label>Estimated total points at TGE${num("total", st.total)}${err("total")}</label>
-  <label>Airdrop share (%)${num("share", Number.isFinite(st.share) ? +(st.share * 100).toPrecision(12) : null)}${err("share")}</label>
+  <label>Airdrop share (%)${num("share", Number.isFinite(st.share) ? +(st.share * 100).toPrecision(15) : null)}${err("share")}</label>
 </form>
 <section class="drop-fdv">
   <div class="drop-fdv-head"><span>FDV <small class="muted" id="drop-fdv-hint"></small></span><b id="drop-fdv-val"></b></div>
@@ -1105,6 +1107,7 @@ function costOut(st: DropState, errs: DropErrors, live: number | null): string {
   if (errs.vol || errs.cbps) return `<p class="muted">Fix the cost inputs above to see this.</p>`;
   if (!(st.vol > 0)) return `<p class="muted">Enter your volume to see it.</p>`;
   const used = effectiveBps(st, live);
+  if (used === null && dataLoading) return `<p class="muted">Loading the live spread… enter your own cost per fill to skip the wait.</p>`;
   if (used === null) return `<p class="warn">Spread unavailable — enter your own cost per fill.</p>`;
   const per = perPoint(st.fdv, st.total, st.share);
   const cost = (st.vol * used) / 1e4;
@@ -1135,11 +1138,12 @@ function bindDrop() {
   const out = document.getElementById("drop-out");
   const slider = document.getElementById("drop-slider") as HTMLInputElement | null;
   if (!out || !slider) return;
-  const live = typicalOmniBps();
   let st = readDrop(location.hash.split("?")[1] ?? "");
   // One link for the address bar, Copy link and Share on X.
   const link = () => `${location.origin}/#/var?${writeDrop(st)}`;
   const paint = () => {
+    if (!document.body.contains(out)) return; // the reader has left the page
+    const live = typicalOmniBps(); // null until market data arrives (or if it never does)
     st = pinAuto(st, live);
     const errs = dropErrors(st);
     const ok = !Object.keys(errs).length;
@@ -1152,7 +1156,13 @@ function bindDrop() {
     document.querySelectorAll<HTMLButtonElement>("[data-fdv]").forEach((b) => b.classList.toggle("on", Number(b.dataset.fdv) === st.fdv));
     const auto = st.abps ?? live;
     document.getElementById("cbps-hint")!.textContent =
-      st.cbps !== null ? "Your value; clear it to use the automatic cost." : auto === null ? "Spread unavailable — enter your own." : `Blank uses ${+auto.toPrecision(4)} bps${st.abps !== null && st.abps !== live ? " (saved in this link)" : " (live)"}.`;
+      st.cbps !== null
+        ? "Your value; clear it to use the automatic cost."
+        : auto === null
+          ? dataLoading
+            ? "Loading the live spread…"
+            : "Spread unavailable — enter your own."
+          : `Blank uses ${+auto.toPrecision(4)} bps${st.abps !== null && st.abps !== live ? " (saved in this link)" : " (live)"}.`;
     out.innerHTML = dropOut(st, errs);
     document.getElementById("cost-out")!.innerHTML = costOut(st, errs, live);
     (document.getElementById("drop-x") as HTMLAnchorElement).href = `https://x.com/intent/post?text=${encodeURIComponent(dropTweet(st))}&url=${encodeURIComponent(link())}`;
@@ -1207,12 +1217,23 @@ function bindDrop() {
       fallback();
     }
   });
+  dropRefresh = paint;
   paint();
 }
 
+function dataWarn(): string {
+  return !dataLoading && loadError ? `<p class="warn">Market data did not load (${esc(loadError)}). The calculator works; only the automatic spread is unavailable, so enter your own cost per fill.</p>` : "";
+}
+const onVarPage = () => /^#\/?var(\?|$)/.test(location.hash);
+
 async function route() {
   const h = location.hash.replace(/^#\/?/, "");
-  if (!snap && !(h === "var" || h.startsWith("var?"))) {
+  if (!onVarPage()) dropRefresh = null;
+  if (!snap && dataLoading && !onVarPage()) {
+    app.innerHTML = `<p class="loading">Loading the latest snapshot…</p>`;
+    return; // boot() routes again once the data is in
+  }
+  if (!snap && !onVarPage()) {
     app.innerHTML = shell("", `<p class="warn">Could not load data: ${esc(loadError ?? "unknown error")}. The <a href="#/var">VAR points calculator</a> still works.</p>`);
     bindShell();
     return;
@@ -1223,8 +1244,7 @@ async function route() {
     return viewWeek(h === "week" ? "latest" : decodeURIComponent(h.slice(5)));
   }
   if (h === "var" || h.startsWith("var?")) {
-    const warn = loadError ? `<p class="warn">Market data did not load (${esc(loadError)}). The calculator works; only the automatic spread is unavailable, so enter your own cost per fill.</p>` : "";
-    app.innerHTML = shell("var", warn + viewDrop());
+      app.innerHTML = shell("var", `<div id="data-warn">${dataWarn()}</div>` + viewDrop());
     bindShell();
     bindDrop();
     window.scrollTo(0, 0);
@@ -1263,14 +1283,18 @@ async function boot() {
   }
   loadWatch();
   app.innerHTML = `<p class="loading">Loading the latest snapshot…</p>`;
-  base = await resolveBase();
-  try {
-    [snap, meta] = await Promise.all([getJson<Snapshot>("latest.json"), getJson<typeof meta>("meta.json").catch(() => null)]);
-  } catch (e) {
-    // The VAR calculator needs no market data, so keep the site up and let route() decide.
-    snap = null;
-    loadError = String(e);
-  }
+  // The VAR calculator needs no market data: it opens at once from the link, and the
+  // data loads behind it (only its automatic spread waits for it).
+  const load = (async () => {
+    try {
+      base = await resolveBase();
+      [snap, meta] = await Promise.all([getJson<Snapshot>("latest.json"), getJson<typeof meta>("meta.json").catch(() => null)]);
+    } catch (e) {
+      snap = null;
+      loadError = String(e);
+    }
+    dataLoading = false;
+  })();
   window.addEventListener("hashchange", route);
   document.addEventListener("click", (ev) => {
     const b = (ev.target as HTMLElement | null)?.closest<HTMLButtonElement>("[data-star]");
@@ -1287,6 +1311,12 @@ async function boot() {
     if (nav) nav.innerHTML = `★ Watchlist${watch.size ? ` <span class="badge">${watch.size}</span>` : ""}`;
   });
   await route();
+  await load;
+  if (onVarPage() && dropRefresh) {
+    const w = document.getElementById("data-warn");
+    if (w) w.innerHTML = dataWarn();
+    dropRefresh();
+  } else await route();
 }
 
 boot();
