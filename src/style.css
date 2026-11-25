@@ -225,3 +225,8 @@ form.calc .go { font: inherit; font-weight: 600; color: #fff; background: var(--
 .drop-notes { padding-left: 18px; }
 .drop-notes li { margin: 4px 0; }
 @media (max-width: 640px) { .drop-kpis { grid-template-columns: 1fr; } }
+.field-err { color: var(--neg); font-size: 11.5px; min-height: 0; }
+.field-err:empty { display: none; }
+.drop-kpis small { color: var(--muted); font-size: 11.5px; }
+.drop-blocked { margin: 10px 0 14px; }
+.drop-share[hidden] { display: none; }

@@ -6,7 +6,7 @@ import { bookCost, midOf, parseHlBook, parseLighterBook, TAKER_FEE, type Level }
 import { normalizeSymbol } from "./lib/venues.ts";
 import { isoWeek, WEEK, type Digest, type DigestRow } from "./lib/summary.ts";
 import { byHour, legEstimate, omniCostAt, pairEstimate, trailingMean, type Side } from "./lib/calc.ts";
-import { BENCH_AIRDROP, BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, FDV_MAX, fdvFromSlider, perPoint, pointsFor, readDrop, SCENARIOS, sliderFromFdv, writeDrop, type DropState } from "./lib/airdrop.ts";
+import { BENCH_AIRDROP, BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, dropErrors, FDV_MAX, MIN_POINTS, pointsLabel, shareLabel, fdvFromSlider, perPoint, pointsFor, readDrop, SCENARIOS, sliderFromFdv, writeDrop, type DropState } from "./lib/airdrop.ts";
 import { venueMedian } from "./lib/snapshot.ts";
 import { VENUE_LABEL, VENUES, type MarketRow, type Snapshot, type Venue } from "./lib/types.ts";
 
@@ -1006,6 +1006,7 @@ function bindList(st: ListState, rerender: () => void) {
 // ---------- VAR points -> airdrop ----------
 
 const fdvText = (x: number) => (x >= 1e9 ? `$${+(x / 1e9).toFixed(2)}B` : x >= 1e6 ? `$${Math.round(x / 1e6)}M` : `$${Math.max(1, Math.round(x / 1e3))}K`);
+/** Points someone would need: rounded up, since a fraction short is not enough. */
 const ptsText = (x: number) => (Number.isFinite(x) ? Math.ceil(x).toLocaleString("en-US") : DASH);
 const perPtText = (x: number) =>
   !Number.isFinite(x) ? DASH : x >= 1000 ? `$${Math.round(x).toLocaleString("en-US")}` : x >= 10 ? `$${x.toFixed(1)}` : x >= 1 ? `$${x.toFixed(2)}` : `$${x.toPrecision(2)}`;
@@ -1022,12 +1023,13 @@ function viewDrop(): string {
   const st = readDrop(location.hash.split("?")[1] ?? "");
   const typical = typicalOmniBps();
   const num = (k: string, v: number | string, extra = "") => `<input type="number" min="0" step="any" data-d="${k}" value="${v}" ${extra}>`;
+  const err = (k: string) => `<small class="field-err" data-err="${k}" role="alert"></small>`;
   return `<div class="lede"><h1>VAR points → airdrop estimate</h1><p>Type your Variational points and pick an FDV to see what they might be worth at TGE, next to where HYPE and LIT traded at launch, at their lows and at their peaks. Arithmetic on public numbers, not a prediction and not advice.</p></div>
 <form class="calc" id="drop-form" onsubmit="return false">
-  <label>Your points${num("pts", st.points)}</label>
+  <label>Your points${num("pts", st.points)}${err("pts")}</label>
   <label>Target (USD, optional)${num("target", st.target || "", 'placeholder="e.g. 5000"')}</label>
-  <label>Estimated total points at TGE${num("total", st.total)}</label>
-  <label>Airdrop share (%)${num("share", +(st.share * 100).toFixed(2), 'max="100"')}</label>
+  <label>Estimated total points at TGE${num("total", st.total)}${err("total")}</label>
+  <label>Airdrop share (%)${num("share", +(st.share * 100).toFixed(2), 'max="100"')}${err("share")}</label>
 </form>
 <section class="drop-fdv">
   <div class="drop-fdv-head"><span>FDV <small class="muted" id="drop-fdv-hint"></small></span><b id="drop-fdv-val">${fdvText(st.fdv)}</b></div>
@@ -1047,25 +1049,32 @@ function viewDrop(): string {
 <section class="chart"><div class="chart-head"><h3>Assumptions</h3></div><ul class="note drop-notes">
 <li><b>Airdrop share 32%:</b> the genesis distribution in Variational's docs, proportional to points and fully unlocked at TGE. Total supply is not public, so the math uses FDV directly.</li>
 <li><b>Weekly points (official):</b> Variational's 24 September 2026 update says 150,000 points are distributed each week until TGE, which is set for Q4 2026.</li>
-<li><b>Estimated total ${ptsText(DEFAULT_TOTAL_POINTS)} (our estimate, not official):</b> community trackers counted about 10.2M points by mid-November; adding the official 150K a week through the end of 2026 gives ~11.2M. An earlier TGE means fewer points and more per point. Change it if you have a better number.</li>
+<li><b>Estimated total ${ptsText(DEFAULT_TOTAL_POINTS)} (our estimate, not official):</b> starts from "at least 10.2 million points" after the 13 November 2026 distribution, as counted by <a href="https://www.kucoin.com/news/flash/variational-airdrop-point-valuation-estimated-at-47-after-1-5b-valuation-raise" target="_blank" rel="noopener">BeInCrypto (19 Nov 2026)</a> from the 3M retroactive points plus 150K each Friday. Adding the official 150K for the six Fridays left in 2026 (20 Nov – 25 Dec) gives ~11.1M. An earlier TGE means fewer points and more per point. Change it if you have a better number.</li>
+<li><b>Minimum balance:</b> Variational's update says you need at least ${MIN_POINTS} point to claim the genesis airdrop; below that the page shows no personal estimate.</li>
 <li><b>Benchmarks:</b> daily closes from Hyperliquid's HYPE/USDC and Lighter's LIT/USDC spot markets. CoinGecko lists intraday extremes outside these (HYPE $3.81 low on launch day, LIT $7.86 in its first minutes), which were thin.</li>
 <li>Referral points, boosts and any sybil filtering change the real numbers. This page keeps nothing: your inputs live only in the link.</li>
 </ul></section>`;
 }
 
 function dropOut(st: DropState): string {
+  const errs = dropErrors(st);
+  if (Object.keys(errs).length) {
+    return `<p class="warn drop-blocked">${Object.values(errs).map(esc).join(". ")}. The estimate and sharing are paused until this is fixed.</p>`;
+  }
   const per = perPoint(st.fdv, st.total, st.share);
+  const eligible = st.points >= MIN_POINTS;
   const yours = per * st.points;
   const tgt = st.target > 0;
+  const mine = (x: number) => (eligible ? money(x) : DASH);
   const cards = `<section class="kpis drop-kpis">
   <div><span>One point at ${fdvText(st.fdv)}</span><b>${perPtText(per)}</b></div>
-  <div><span>Your ${ptsText(st.points)} points</span><b>${money(yours)}</b></div>
-  <div><span>${tgt ? `Points for ${money(st.target)}` : "Your share of the drop"}</span><b>${tgt ? ptsText(pointsFor(st.target, st.fdv, st.total, st.share)) : `${((st.points / st.total) * 100).toPrecision(2)}%`}</b></div>
+  <div><span>Your ${pointsLabel(st.points)} ${st.points === 1 ? "point" : "points"}</span>${eligible ? `<b>${money(yours)}</b>` : `<b class="neg">Not eligible</b><small>Variational's minimum to claim is ${MIN_POINTS} point</small>`}</div>
+  <div><span>${tgt ? `Points for ${money(st.target)}` : "Your share of the drop"}</span><b>${tgt ? ptsText(Math.max(MIN_POINTS, pointsFor(st.target, st.fdv, st.total, st.share))) : shareLabel(st.points, st.total)}</b></div>
 </section>`;
 
   const row = (fdv: number, lead: string, cls = "") => {
     const p = perPoint(fdv, st.total, st.share);
-    return `<tr class="${cls}">${lead}<td class="num">${fdvText(fdv)}</td><td class="num">${perPtText(p)}</td><td class="num strong">${money(p * st.points)}</td>${tgt ? `<td class="num">${ptsText(pointsFor(st.target, fdv, st.total, st.share))}</td>` : ""}</tr>`;
+    return `<tr class="${cls}">${lead}<td class="num">${fdvText(fdv)}</td><td class="num">${perPtText(p)}</td><td class="num strong">${mine(p * st.points)}</td>${tgt ? `<td class="num">${ptsText(Math.max(MIN_POINTS, pointsFor(st.target, fdv, st.total, st.share)))}</td>` : ""}</tr>`;
   };
   const tgtTh = tgt ? `<th class="num">Points for ${money(st.target)}</th>` : "";
   const scen = `<section class="chart"><div class="chart-head"><h3>FDV scenarios</h3></div><div class="table-wrap flat"><table class="calc-table">
@@ -1088,6 +1097,7 @@ function costOut(st: DropState): string {
   const cbps = st.cbps > 0 ? st.cbps : typical ?? 0;
   const cpp = costPerPoint(st.vol, cbps, st.points);
   const be = breakEvenFdv(cpp, st.total, st.share);
+  if (Object.keys(dropErrors(st)).length) return `<p class="muted">Fix the inputs above to see this.</p>`;
   if (!(st.vol > 0) || !Number.isFinite(cpp)) return `<p class="muted">Enter your volume to see it.</p>`;
   return `<section class="kpis drop-kpis">
   <div><span>Spread paid</span><b>${money((st.vol * cbps) / 1e4)}</b></div>
@@ -1103,14 +1113,20 @@ function bindDrop() {
   let st = readDrop(location.hash.split("?")[1] ?? "");
   const shareUrl = () => `${location.origin}/#/var?${writeDrop(st)}`;
   const paint = () => {
-    history.replaceState(null, "", `#/var?${writeDrop(st)}`);
+    const errs = dropErrors(st);
+    const ok = !Object.keys(errs).length;
+    document.querySelectorAll<HTMLElement>("[data-err]").forEach((el) => (el.textContent = errs[el.dataset.err as keyof typeof errs] ?? ""));
+    // A wrong input must not end up in a shared link: keep the last good URL and hide sharing.
+    document.querySelector<HTMLElement>(".drop-share")!.hidden = !ok;
+    if (ok) history.replaceState(null, "", `#/var?${writeDrop(st)}`);
     document.getElementById("drop-fdv-val")!.textContent = fdvText(st.fdv);
     document.getElementById("drop-fdv-hint")!.textContent = st.fdv > FDV_MAX ? "from the table, above the slider's range" : "";
     document.querySelectorAll<HTMLButtonElement>("[data-fdv]").forEach((b) => b.classList.toggle("on", Number(b.dataset.fdv) === st.fdv));
     out.innerHTML = dropOut(st);
     document.getElementById("cost-out")!.innerHTML = costOut(st);
     const per = perPoint(st.fdv, st.total, st.share);
-    const text = `${ptsText(st.points)} Variational points at a ${fdvText(st.fdv)} VAR FDV ≈ ${money(per * st.points)} (${perPtText(per)}/pt, ${(st.share * 100).toFixed(0)}% airdrop, ${(st.total / 1e6).toFixed(1)}M total points). My scenario on Omni Tape:`;
+    const value = st.points >= MIN_POINTS ? `≈ ${money(per * st.points)}` : `= not eligible (minimum ${MIN_POINTS} point)`;
+    const text = `${pointsLabel(st.points)} Variational ${st.points === 1 ? "point" : "points"} at a ${fdvText(st.fdv)} VAR FDV ${value} (${perPtText(per)}/pt, ${(st.share * 100).toFixed(0)}% airdrop, ${(st.total / 1e6).toFixed(1)}M total points). My scenario on Omni Tape:`;
     (document.getElementById("drop-x") as HTMLAnchorElement).href = `https://x.com/intent/post?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrl())}`;
   };
   const read = (ev: Event) => {
@@ -1119,9 +1135,10 @@ function bindDrop() {
     if (!k) return;
     const v = Number(el.value);
     const ok = el.value.trim() !== "" && Number.isFinite(v) && v >= 0;
-    if (k === "pts" && ok && v > 0) st.points = v;
-    else if (k === "total" && ok && v > 0) st.total = v;
-    else if (k === "share" && ok && v > 0 && v <= 100) st.share = v / 100;
+    // Keep what was typed, even when wrong, so the page can say what is wrong with it.
+    if (k === "pts") st.points = ok ? v : NaN;
+    else if (k === "total") st.total = ok ? v : NaN;
+    else if (k === "share") st.share = ok ? v / 100 : NaN;
     else if (k === "target") st.target = ok ? v : 0;
     else if (k === "vol") st.vol = ok ? v : 0;
     else if (k === "cbps") st.cbps = ok ? v : 0;

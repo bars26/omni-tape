@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, FDV_LINK_MAX, FDV_MAX, FDV_MIN, fdvFromSlider, perPoint, pointsFor, readDrop, roundFdv, sliderFromFdv, writeDrop } from "../src/lib/airdrop.ts";
+import { BENCHMARKS, breakEvenFdv, costPerPoint, DEFAULT_TOTAL_POINTS, dropErrors, FDV_LINK_MAX, MIN_POINTS, pointsLabel, shareLabel, FDV_MAX, FDV_MIN, fdvFromSlider, perPoint, pointsFor, readDrop, roundFdv, sliderFromFdv, writeDrop } from "../src/lib/airdrop.ts";
 
 describe("airdrop", () => {
   it("values a point as share of FDV over total points", () => {
@@ -41,5 +41,35 @@ describe("airdrop", () => {
     for (const b of BENCHMARKS) expect(b.fdv).toBeCloseTo(b.price * 1e9);
     expect(BENCHMARKS.filter((b) => b.token === "HYPE")).toHaveLength(3);
     expect(BENCHMARKS.slice(0, 2).map((b) => b.label)).toEqual(["Launch day close", "Launch day close"]);
+  });
+  it("writes point balances as typed, decimals included", () => {
+    expect(pointsLabel(1.5)).toBe("1.5");
+    expect(pointsLabel(0.5)).toBe("0.5");
+    expect(pointsLabel(1)).toBe("1");
+    expect(pointsLabel(1234.25)).toBe("1,234.25");
+    expect(pointsLabel(2500)).toBe("2,500");
+    expect(readDrop(writeDrop({ ...readDrop(""), points: 1.5 })).points).toBe(1.5);
+  });
+  it("knows the 1-point claim minimum", () => {
+    expect(MIN_POINTS).toBe(1);
+    expect(0.5 >= MIN_POINTS).toBe(false);
+    expect(1.5 >= MIN_POINTS).toBe(true);
+    expect(dropErrors({ points: 0.5, total: 11e6, share: 0.32 })).toEqual({}); // valid input, just not eligible
+  });
+  it("formats the share of the drop without scientific notation", () => {
+    expect(shareLabel(800, 11.1e6)).toBe("0.0072%");
+    expect(shareLabel(222e3, 11.1e6)).toBe("2%");
+    expect(shareLabel(11.1e6, 11.1e6)).toBe("100%");
+    expect(shareLabel(0, 11.1e6)).toBe("0%");
+  });
+  it("flags inputs that would make a misleading estimate", () => {
+    expect(dropErrors({ points: 800, total: 11.1e6, share: 0.32 })).toEqual({});
+    expect(dropErrors({ points: 22.2e6, total: 11.1e6, share: 0.32 }).pts).toBe("Your points cannot exceed total points");
+    expect(dropErrors({ points: 800, total: 11.1e6, share: 2 }).share).toMatch(/between 0 and 100/);
+    expect(dropErrors({ points: NaN, total: 11.1e6, share: 0.32 }).pts).toBeTruthy();
+    expect(dropErrors({ points: 800, total: NaN, share: 0.32 }).total).toBeTruthy();
+  });
+  it("derives the default total from 10.2M plus six Fridays", () => {
+    expect(DEFAULT_TOTAL_POINTS).toBe(10.2e6 + 6 * 150_000);
   });
 });

@@ -1,7 +1,36 @@
 // Points -> VAR airdrop estimate. Pure arithmetic: the value of one point is the
 // airdropped share of the FDV split across every point issued by TGE.
 
-export const DEFAULT_TOTAL_POINTS = 11_200_000;
+// At least 10.2M after the 13 Nov 2026 drop (BeInCrypto, 19 Nov 2026), plus the
+// official 150K on each of the six Fridays left in 2026 (20 Nov - 25 Dec).
+export const DEFAULT_TOTAL_POINTS = 11_100_000;
+export const MIN_POINTS = 1; // Variational's minimum balance to claim the genesis airdrop
+
+/** A point balance as typed: thousands separators, decimals kept (up to 4), never rounded up. */
+export function pointsLabel(x: number): string {
+  return Number.isFinite(x) ? x.toLocaleString("en-US", { maximumFractionDigits: 4 }) : "—";
+}
+
+/** Your points as a share of all points, readable at any size. */
+export function shareLabel(points: number, total: number): string {
+  if (!(points >= 0) || !(total > 0)) return "—";
+  const p = (points / total) * 100;
+  if (p === 0) return "0%";
+  if (p >= 1) return `${+p.toFixed(2)}%`;
+  return `${+p.toPrecision(2)}%`;
+}
+
+export type DropErrors = Partial<Record<"pts" | "total" | "share", string>>;
+
+/** Inputs that make a personal estimate meaningless; the page hides it until they are fixed. */
+export function dropErrors(st: Pick<DropState, "points" | "total" | "share">): DropErrors {
+  const e: DropErrors = {};
+  if (!(st.points > 0)) e.pts = "Enter a point balance above 0";
+  if (!(st.total > 0)) e.total = "Enter a total above 0";
+  else if (st.points > st.total) e.pts = "Your points cannot exceed total points";
+  if (!(st.share > 0) || st.share > 1) e.share = "Airdrop share must be between 0 and 100%";
+  return e;
+}
 export const DEFAULT_SHARE = 0.32; // genesis distribution, per Variational's docs
 export const FDV_MIN = 100e6;
 export const FDV_MAX = 10e9;
